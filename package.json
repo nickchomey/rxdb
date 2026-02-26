@@ -312,6 +312,12 @@
       "import": "./dist/esm/plugins/json-dump/index.js",
       "default": "./dist/esm/plugins/json-dump/index.js"
     },
+    "./plugins/dump-file": {
+      "types": "./dist/types/plugins/dump-file/index.d.ts",
+      "require": "./dist/cjs/plugins/dump-file/index.js",
+      "import": "./dist/esm/plugins/dump-file/index.js",
+      "default": "./dist/esm/plugins/dump-file/index.js"
+    },
     "./plugins/key-compression": {
       "types": "./dist/types/plugins/key-compression/index.d.ts",
       "require": "./dist/cjs/plugins/key-compression/index.js",

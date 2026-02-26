@@ -435,6 +435,12 @@ const sidebars = {
 
         {
           type: 'doc',
+          id: 'dump-file',
+          label: 'Dump File (Binary Export/Import)'
+        },
+
+        {
+          type: 'doc',
           id: 'leader-election',
           label: 'Leader Election'
         },

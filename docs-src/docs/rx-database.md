@@ -191,6 +191,30 @@ emptyDatabase.importJSON(json)
 
 Writes the current (or ongoing) database state to the filesystem. [Read more](./backup.md)
 
+### export()
+
+Export the entire database (or selected collections) to a single gzip-compressed `Blob`, including documents and blob attachments. [Read more](./dump-file.md)
+
+Before `export()` and `import()` can be used, you have to add the `dump-file` plugin.
+
+```javascript
+import { addRxPlugin } from 'rxdb';
+import { RxDBDumpFilePlugin } from 'rxdb/plugins/dump-file';
+addRxPlugin(RxDBDumpFilePlugin);
+```
+
+```javascript
+const blob = await myDatabase.export();
+```
+
+### import()
+
+Import a dump file `Blob` into the database. Missing collections are auto-created from the schemas stored in the export header. [Read more](./dump-file.md)
+
+```javascript
+await myDatabase.import(blob);
+```
+
 ### waitForLeadership()
 Returns a Promise which resolves when the RxDatabase becomes [elected leader](./leader-election.md).
 

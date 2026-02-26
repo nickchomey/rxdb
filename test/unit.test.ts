@@ -68,6 +68,7 @@ import './unit/crdt.test.ts';
 import './unit/population.test.ts';
 import './unit/leader-election.test.ts';
 import './unit/backup.test.ts';
+import './unit/dump-file.test.ts';
 import './unit/import-export.test.ts';
 import './unit/database-lifecycle.ts';
 import './unit/plugin.test.ts';

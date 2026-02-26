@@ -532,6 +532,14 @@ export class RxDatabaseBase<
         throw pluginMissing('json-dump');
     }
 
+    export(_options?: any): Promise<Blob> {
+        throw pluginMissing('dump-file');
+    }
+
+    import(_blob: Blob, _options?: any): Promise<RxDatabase<Collections, Reactivity, InstanceCreationOptions>> {
+        throw pluginMissing('dump-file');
+    }
+
     backup(_options: BackupOptions): RxBackupState {
         throw pluginMissing('backup');
     }
