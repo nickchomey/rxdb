@@ -23,10 +23,116 @@ import type {
 import { FLEXSEARCH_META_VERSION } from './types.ts';
 import { catchUpFromCheckpoint } from './indexing.ts';
 
+
+/**
+ * Initializes the FlexSearch index state on storage instance creation.
+ * Attempts to restore from serialized snapshot, falls back to rebuild if invalid.
+ * Catches up any changes since the last checkpoint.
+ */
+export async function initializeIndexState<RxDocType, Internals, InstanceCreationOptions>(
+    state: FlexSearchRuntimeState,
+    instance: any,
+    databaseInstanceToken: string
+): Promise<void> {
+    const metaDocument = await readMetaDocument(state);
+    const hasCompatibleSnapshot = Boolean(
+        metaDocument &&
+        metaDocument.version === FLEXSEARCH_META_VERSION &&
+        metaDocument.schemaHash === state.schemaHash &&
+        metaDocument.serialized
+    );
+
+    let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
+    let restoredFromSnapshot = false;
+    if (hasCompatibleSnapshot && metaDocument?.serialized) {
+        restoredFromSnapshot = await tryRestoreSnapshot(
+            state,
+            metaDocument,
+            databaseInstanceToken
+        );
+        if (restoredFromSnapshot && metaDocument.checkpointId && typeof metaDocument.checkpointLwt === 'number') {
+            startCheckpoint = {
+                id: metaDocument.checkpointId,
+                lwt: metaDocument.checkpointLwt
+            };
+            state.checkpoint = startCheckpoint;
+        }
+    }
+
+    const caughtUpChanges = await catchUpFromCheckpoint(state, instance, startCheckpoint);
+    if (!restoredFromSnapshot || caughtUpChanges) {
+        await persistIndexSnapshot(state, databaseInstanceToken);
+    }
+}
+
+
+/**
+ * Schedules debounced persistence after write operations.
+ * Uses adaptive timing based on actual serialization duration.
+ */
+export function schedulePersistence(
+    state: FlexSearchRuntimeState,
+    persistence: FlexSearchPersistenceConfig,
+    databaseInstanceToken: string
+): void {
+    if (!state.metaStorage) {
+        return;
+    }
+
+    const config = {
+        minDebounce: persistence?.minDebounce ?? 1000,
+        maxDebounce: persistence?.maxDebounce ?? 10000,
+        adaptive: persistence?.adaptive ?? true
+    };
+    const currentTime = now();
+    if (!state.firstChangeAt) {
+        state.firstChangeAt = currentTime;
+    }
+
+    const activeDebounce = state.dynamicDebounceMs ?? config.minDebounce;
+    const elapsed = currentTime - state.firstChangeAt;
+    const remainingMax = config.maxDebounce - elapsed;
+    const delay = remainingMax <= 0 ? 0 : Math.min(activeDebounce, remainingMax);
+
+    if (state.persistenceTimer) {
+        clearTimeout(state.persistenceTimer);
+    }
+    state.persistenceTimer = setTimeout(() => {
+        const startedAt = now();
+        void enqueueStateWork(state, async () => {
+            await persistIndexSnapshot(state, databaseInstanceToken);
+            if (config.adaptive) {
+                const workDuration = Math.max(5, now() - startedAt);
+                state.dynamicDebounceMs = Math.max(
+                    config.minDebounce,
+                    Math.min(config.maxDebounce, workDuration * 8)
+                );
+            }
+        });
+    }, delay);
+}
+
+
+/**
+ * Enqueues async work to prevent concurrent operations.
+ * All write queue operations run serially.
+ */
+export function enqueueStateWork(
+    state: FlexSearchRuntimeState,
+    work: () => Promise<void>
+): Promise<void> {
+    const current = state.writeQueue ?? Promise.resolve();
+    const next = current.then(work).catch(error => {
+        console.error('[FlexSearch] queued work failed', error);
+    });
+    state.writeQueue = next;
+    return next;
+}
+
 /**
  * Reads the FlexSearch metadata document from storage.
  */
-export async function readMetaDocument(
+async function readMetaDocument(
     state: FlexSearchRuntimeState
 ): Promise<FlexSearchMetaDocumentData | undefined> {
     if (!state.metaStorage) {
@@ -40,7 +146,7 @@ export async function readMetaDocument(
  * Writes a FlexSearch metadata document to storage.
  * Handles revision generation and conflict resolution.
  */
-export async function writeMetaDocument(
+async function writeMetaDocument(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string,
     patch: Partial<FlexSearchMetaDocument>
@@ -85,7 +191,7 @@ export async function writeMetaDocument(
  * Clears the serialized snapshot and checkpoint from metadata.
  * Used when snapshot is corrupted or invalid.
  */
-export async function clearMetaDocument(
+async function clearMetaDocument(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string
 ): Promise<void> {
@@ -97,23 +203,6 @@ export async function clearMetaDocument(
 }
 
 /**
- * Serializes the FlexSearch index using export() API.
- * Returns JSON string of export entries that can be restored with import().
- *
- * NOTE: Document.serialize() doesn't exist - Document uses export/import pattern.
- * Only Index has serialize(). Document exports as [key, data] pairs.
- */
-export async function serializeFlexSearchIndex(
-    index: FlexSearchRuntimeState['index']
-): Promise<string> {
-    const entries: Array<[string, unknown]> = [];
-    await index.export((key, data) => {
-        entries.push([key as string, data]);
-    });
-    return JSON.stringify(entries);
-}
-
-/**
  * Persists the current index snapshot to metadata storage.
  * Updates checkpoint and resets persistence counters.
  */
@@ -121,7 +210,7 @@ export async function persistIndexSnapshot(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string
 ): Promise<void> {
-    const serialized = await serializeFlexSearchIndex(state.index);
+    const serialized = await state.index.serialize(false) as string;
 
     await writeMetaDocument(state, databaseInstanceToken, {
         serialized,
@@ -133,122 +222,8 @@ export async function persistIndexSnapshot(
 }
 
 /**
- * Returns persistence configuration with defaults.
- */
-export function getPersistenceConfig(
-    input?: FlexSearchPersistenceConfig
-): Required<FlexSearchPersistenceConfig> {
-    return {
-        minDebounce: input?.minDebounce ?? 1000,
-        maxDebounce: input?.maxDebounce ?? 10000,
-        adaptive: input?.adaptive ?? true
-    };
-}
-
-/**
- * Schedules debounced persistence after write operations.
- * Uses adaptive timing based on actual serialization duration.
- */
-export function schedulePersistence(
-    state: FlexSearchRuntimeState,
-    persistence: FlexSearchPersistenceConfig,
-    databaseInstanceToken: string
-): void {
-    if (!state.metaStorage) {
-        return;
-    }
-
-    const config = getPersistenceConfig(persistence);
-    const currentTime = now();
-    if (!state.firstChangeAt) {
-        state.firstChangeAt = currentTime;
-    }
-
-    const activeDebounce = state.dynamicDebounceMs ?? config.minDebounce;
-    const elapsed = currentTime - state.firstChangeAt;
-    const remainingMax = config.maxDebounce - elapsed;
-    const delay = remainingMax <= 0 ? 0 : Math.min(activeDebounce, remainingMax);
-
-    if (state.persistenceTimer) {
-        clearTimeout(state.persistenceTimer);
-    }
-    state.persistenceTimer = setTimeout(() => {
-        const startedAt = now();
-        void enqueueStateWork(state, async () => {
-            await persistIndexSnapshot(state, databaseInstanceToken);
-            if (config.adaptive) {
-                const workDuration = Math.max(5, now() - startedAt);
-                state.dynamicDebounceMs = Math.max(
-                    config.minDebounce,
-                    Math.min(config.maxDebounce, workDuration * 8)
-                );
-            }
-        });
-    }, delay);
-}
-
-/**
- * Enqueues async work to prevent concurrent operations.
- * All write queue operations run serially.
- */
-export function enqueueStateWork(
-    state: FlexSearchRuntimeState,
-    work: () => Promise<void>
-): Promise<void> {
-    const current = state.writeQueue ?? Promise.resolve();
-    const next = current.then(work).catch(error => {
-        console.error('[FlexSearch] queued work failed', error);
-    });
-    state.writeQueue = next;
-    return next;
-}
-
-/**
- * Initializes the FlexSearch index state on storage instance creation.
- * Attempts to restore from serialized snapshot, falls back to rebuild if invalid.
- * Catches up any changes since the last checkpoint.
- */
-export async function initializeIndexState<RxDocType, Internals, InstanceCreationOptions>(
-    state: FlexSearchRuntimeState,
-    instance: any,
-    databaseInstanceToken: string
-): Promise<void> {
-    const metaDocument = await readMetaDocument(state);
-    const hasCompatibleSnapshot = Boolean(
-        metaDocument &&
-        metaDocument.version === FLEXSEARCH_META_VERSION &&
-        metaDocument.schemaHash === state.schemaHash &&
-        metaDocument.serialized
-    );
-
-    let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
-    let restoredFromSnapshot = false;
-    if (hasCompatibleSnapshot && metaDocument?.serialized) {
-        restoredFromSnapshot = await tryRestoreSnapshot(
-            state,
-            metaDocument,
-            databaseInstanceToken
-        );
-        if (restoredFromSnapshot && metaDocument.checkpointId && typeof metaDocument.checkpointLwt === 'number') {
-            startCheckpoint = {
-                id: metaDocument.checkpointId,
-                lwt: metaDocument.checkpointLwt
-            };
-            state.checkpoint = startCheckpoint;
-        }
-    }
-
-    const caughtUpChanges = await catchUpFromCheckpoint(state, instance, startCheckpoint);
-    if (!restoredFromSnapshot || caughtUpChanges) {
-        await persistIndexSnapshot(state, databaseInstanceToken);
-    }
-}
-
-/**
- * Attempts to restore FlexSearch index from export entries.
- * Uses export/import pattern: parse JSON and call index.import() per entry.
- *
- * NOTE: Document doesn't have serialize() - it uses export/import pattern.
+ * Attempts to restore FlexSearch index from serialized function body.
+ * Uses Document.serialize() pattern: inject function body via new Function().
  * Returns true if restoration succeeded, false if corrupted/invalid.
  */
 export async function tryRestoreSnapshot(
@@ -260,15 +235,9 @@ export async function tryRestoreSnapshot(
         if (!metaDocument.serialized) {
             return false;
         }
-        // Parse the JSON array of [key, data] pairs
-        const entries = JSON.parse(metaDocument.serialized) as Array<[string, unknown]>;
-        if (!Array.isArray(entries)) {
-            throw new Error('Serialized payload is not an array');
-        }
-        // Import each entry into the index
-        entries.forEach(([key, data]) => {
-            state.index.import(key, data);
-        });
+        // Create injection function from serialized body and execute with document instance
+        const inject = new Function('doc', metaDocument.serialized);
+        inject(state.index);
         return true;
     } catch (error) {
         console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);

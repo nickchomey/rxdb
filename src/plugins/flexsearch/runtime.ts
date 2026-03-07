@@ -15,14 +15,6 @@ import type { FlexSearchRuntimeState } from './types.ts';
 const RUNTIME_STATES = new Map<string, FlexSearchRuntimeState>();
 
 /**
- * Generates the runtime state key for a collection.
- * Format: "{databaseName}::{collectionName}"
- */
-function getRuntimeStateKey(databaseName: string, collectionName: string): string {
-    return `${databaseName}::${collectionName}`;
-}
-
-/**
  * Retrieves the FlexSearch runtime state for a collection.
  * Returns undefined if the collection doesn't have FTS enabled.
  */
@@ -85,4 +77,12 @@ export async function removeFlexSearchState(
     }
 
     RUNTIME_STATES.delete(stateKey);
+}
+
+/**
+ * Generates the runtime state key for a collection.
+ * Format: "{databaseName}::{collectionName}"
+ */
+function getRuntimeStateKey(databaseName: string, collectionName: string): string {
+    return `${databaseName}::${collectionName}`;
 }

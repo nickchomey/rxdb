@@ -51,7 +51,23 @@ export function applyEventBulkToIndex<RxDocType>(
     eventBulk: EventBulk<RxStorageChangeEvent<RxDocType>, RxStorageDefaultCheckpoint>
 ): void {
     eventBulk.events.forEach(event => {
-        applyChangeEventToIndex(state, event);
+        const documentData = event.documentData;
+        const primaryValue = getPrimaryValue(documentData, state.primaryPath);
+        if (!primaryValue) {
+            return;
+        }
+
+        if (event.operation === 'DELETE' || documentData._deleted) {
+            state.index.remove(primaryValue);
+            return;
+        }
+
+        const indexedDocument = documentData as unknown as FlexSearchIndexedDocument;
+        if (event.operation === 'UPDATE') {
+            state.index.update(indexedDocument);
+        } else {
+            state.index.add(indexedDocument);
+        }
     });
 
     if (eventBulk.checkpoint) {
@@ -63,83 +79,6 @@ export function applyEventBulkToIndex<RxDocType>(
 
     state.changesSinceLastPersist =
         (state.changesSinceLastPersist ?? 0) + eventBulk.events.length;
-}
-
-/**
- * Converts RxDB document to FlexSearch-compatible document.
- * FlexSearch only needs the fields that are indexed.
- */
-function toFlexSearchDocument<RxDocType>(
-    documentData: RxDocumentData<RxDocType>
-): FlexSearchIndexedDocument {
-    return documentData as unknown as FlexSearchIndexedDocument;
-}
-
-/**
- * Applies a single change event to the FlexSearch index.
- * Handles INSERT, UPDATE, and DELETE operations.
- */
-export function applyChangeEventToIndex<RxDocType>(
-    state: FlexSearchRuntimeState,
-    event: RxStorageChangeEvent<RxDocType>
-): void {
-    const documentData = event.documentData;
-    const primaryValue = getPrimaryValue(documentData, state.primaryPath);
-    if (!primaryValue) {
-        return;
-    }
-
-    if (event.operation === 'DELETE' || documentData._deleted) {
-        state.index.remove(primaryValue);
-        return;
-    }
-
-    const indexedDocument = toFlexSearchDocument(documentData);
-    if (event.operation === 'UPDATE') {
-        state.index.update(indexedDocument);
-    } else {
-        state.index.add(indexedDocument);
-    }
-}
-
-/**
- * Applies a document to the FlexSearch index.
- * Used during catch-up from checkpoint.
- */
-export function applyDocumentToIndex<RxDocType>(
-    state: FlexSearchRuntimeState,
-    documentData: RxDocumentData<RxDocType>
-): void {
-    const primaryValue = getPrimaryValue(documentData, state.primaryPath);
-    if (!primaryValue) {
-        return;
-    }
-
-    if (documentData._deleted) {
-        state.index.remove(primaryValue);
-        return;
-    }
-
-    state.index.add(toFlexSearchDocument(documentData));
-}
-
-
-/**
- * Extracts the primary key value from a document.
- * Returns undefined if the primary value is not a string or number.
- */
-export function getPrimaryValue<RxDocType>(
-    documentData: RxDocumentData<RxDocType>,
-    primaryPath: string
-): string | undefined {
-    const primaryValue = (documentData as Record<string, unknown>)[primaryPath];
-    if (typeof primaryValue === 'string') {
-        return primaryValue;
-    }
-    if (typeof primaryValue === 'number') {
-        return String(primaryValue);
-    }
-    return undefined;
 }
 
 
@@ -164,7 +103,15 @@ export async function catchUpFromCheckpoint<RxDocType, Internals, InstanceCreati
         if (changed.documents.length > 0) {
             hasChanges = true;
             changed.documents.forEach(documentData => {
-                applyDocumentToIndex(state, documentData);
+                const primaryValue = getPrimaryValue(documentData, state.primaryPath);
+                if (!primaryValue) {
+                    return;
+                }
+                if (documentData._deleted) {
+                    state.index.remove(primaryValue);
+                } else {
+                    state.index.add(documentData as unknown as FlexSearchIndexedDocument);
+                }
             });
         }
         checkpoint = changed.checkpoint;
@@ -183,4 +130,25 @@ export async function catchUpFromCheckpoint<RxDocType, Internals, InstanceCreati
     }
 
     return hasChanges;
+}
+
+// -------------------------------
+
+
+/**
+ * Extracts the primary key value from a document.
+ * Returns undefined if the primary value is not a string or number.
+ */
+function getPrimaryValue<RxDocType>(
+    documentData: RxDocumentData<RxDocType>,
+    primaryPath: string
+): string | undefined {
+    const primaryValue = (documentData as Record<string, unknown>)[primaryPath];
+    if (typeof primaryValue === 'string') {
+        return primaryValue;
+    }
+    if (typeof primaryValue === 'number') {
+        return String(primaryValue);
+    }
+    return undefined;
 }
