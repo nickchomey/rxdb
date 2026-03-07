@@ -27,82 +27,6 @@ type RxQueryWithCollection = {
 };
 
 
-/**
- * Type guard for FlexSearch Document search results.
- * Document search returns: [{ field: string, result: string[] }]
- */
-function isFlexSearchDocumentResult(value: unknown): value is { field: string; result: unknown[] } {
-    if (!value || typeof value !== 'object') {
-        return false;
-    }
-    const valueRecord = value as Record<string, unknown>;
-    return Array.isArray(valueRecord.result);
-}
-
-/**
- * Normalizes FlexSearch search results to string array.
- * Handles both Index search (returns string[]) and Document search (returns [{ result: string[] }]).
- */
-function normalizeSearchResultIds(searchResult: unknown): string[] {
-    if (!Array.isArray(searchResult)) {
-        return [];
-    }
-    if (searchResult.length === 0) {
-        return [];
-    }
-
-    const firstRow = searchResult[0];
-    if (isFlexSearchDocumentResult(firstRow)) {
-        // Document search: flatten all result arrays
-        const idSet = new Set<string>();
-        searchResult.forEach(row => {
-            if (!isFlexSearchDocumentResult(row)) {
-                return;
-            }
-            row.result.forEach(idValue => {
-                idSet.add(String(idValue));
-            });
-        });
-        return Array.from(idSet);
-    }
-
-    // Index search: direct ID array
-    return searchResult.map(idValue => String(idValue));
-}
-
-
-
-/**
- * Extracts search term from $fts selector value.
- * Supports both string and { $eq: string } forms.
- */
-export function getFlexSearchSearchTerm(value: unknown): string | undefined {
-    if (typeof value === 'string') {
-        return value;
-    }
-    if (!value || typeof value !== 'object') {
-        return undefined;
-    }
-
-    const valueRecord = value as Record<string, unknown>;
-    return typeof valueRecord.$eq === 'string' ? valueRecord.$eq : undefined;
-}
-
-/**
- * Searches FlexSearch index for matching document IDs.
- * Returns empty array on error to prevent query failure.
- */
-export function searchFlexIds(
-    state: FlexSearchRuntimeState,
-    searchTerm: string
-): string[] {
-    try {
-        return normalizeSearchResultIds(state.index.search(searchTerm));
-    } catch (error) {
-        console.error('[FlexSearch] search failed', error);
-        return [];
-    }
-}
 
 /**
  * Rewrites RxDB query selector to replace $fts with primaryKey $in filter.
@@ -117,12 +41,23 @@ export function searchFlexIds(
  */
 export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
     const selector = args.mangoQuery.selector as FlexSearchSelector;
-    const searchTerm = getFlexSearchSearchTerm(selector?.$fts);
+
+    // Extract search term from $fts selector
+    const ftsValue = selector?.$fts;
+    let searchTerm: string | undefined;
+    if (typeof ftsValue === 'string') {
+        searchTerm = ftsValue;
+    } else if (ftsValue && typeof ftsValue === 'object') {
+        const valueRecord = ftsValue as Record<string, unknown>;
+        searchTerm = typeof valueRecord.$eq === 'string' ? valueRecord.$eq : undefined;
+    }
+
     if (!searchTerm) {
         return;
     }
 
-    const collection = getRxQueryCollection(args);
+    // Extract collection from RxQuery (exists at runtime)
+    const collection = (args.rxQuery as any).collection as RxQueryWithCollection['collection'];
 
     const state = getFlexSearchState(
         collection.database.name,
@@ -168,18 +103,50 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
     syncRewrittenMangoQuery(args);
 }
 
+
+/**
+ * Searches FlexSearch index for matching document IDs.
+ * Returns empty array on error to prevent query failure.
+ */
+function searchFlexIds(
+    state: FlexSearchRuntimeState,
+    searchTerm: string
+): string[] {
+    try {
+        const searchResult = state.index.search(searchTerm);
+
+        // Normalize FlexSearch results to string array
+        if (!Array.isArray(searchResult) || searchResult.length === 0) {
+            return [];
+        }
+
+        const firstRow = searchResult[0];
+        // Check if Document search format: [{ field: string, result: string[] }]
+        if (firstRow && typeof firstRow === 'object' && 'result' in firstRow && Array.isArray((firstRow as any).result)) {
+            // Document search: flatten all result arrays
+            const idSet = new Set<string>();
+            searchResult.forEach(row => {
+                if (row && typeof row === 'object' && 'result' in row && Array.isArray((row as any).result)) {
+                    (row as any).result.forEach((idValue: unknown) => {
+                        idSet.add(String(idValue));
+                    });
+                }
+            });
+            return Array.from(idSet);
+        }
+
+        // Index search: direct ID array
+        return searchResult.map(idValue => String(idValue));
+    } catch (error) {
+        console.error('[FlexSearch] search failed', error);
+        return [];
+    }
+}
+
 /**
  * Syncs the rewritten mango query back to RxQuery.
  * Required for event-reduce to use the rewritten selector.
  */
-export function syncRewrittenMangoQuery(args: RxPluginPrePrepareQueryArgs): void {
+function syncRewrittenMangoQuery(args: RxPluginPrePrepareQueryArgs): void {
     (args.rxQuery as unknown as { mangoQuery: typeof args.mangoQuery }).mangoQuery = flatClone(args.mangoQuery);
-}
-
-/**
- * Extracts the collection from RxQuery.
- * The collection property exists at runtime but isn't in the type declaration.
- */
-export function getRxQueryCollection(args: RxPluginPrePrepareQueryArgs): RxQueryWithCollection['collection'] {
-    return (args.rxQuery as any).collection as RxQueryWithCollection['collection'];
 }

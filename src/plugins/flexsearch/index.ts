@@ -205,14 +205,9 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
 };
 
 /**
- * Re-export getFlexSearchState for testing and debugging.
+ * Re-export runtime state utilities for testing and debugging.
  */
-export function getFlexSearchState(
-    databaseName: string,
-    collectionName: string
-): FlexSearchRuntimeState | undefined {
-    return getRuntimeState(databaseName, collectionName);
-}
+export { getFlexSearchState } from './runtime.ts';
 
 /**
  * Export all types.

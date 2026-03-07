@@ -21,34 +21,22 @@ export function extractFlexSearchConfig<RxDocType>(schema: RxJsonSchema<RxDocTyp
     const fields: Array<{ field: string; config: FlexSearchFieldConfig }> = [];
 
     Object.entries(schema.properties).forEach(([fieldName, fieldDefinition]) => {
-        const ftsConfig = getFieldFlexSearchConfig(fieldDefinition);
-        if (!ftsConfig) {
+        // Inline extraction of fts config from field definition
+        if (!fieldDefinition || typeof fieldDefinition !== 'object') {
+            return;
+        }
+        const fieldRecord = fieldDefinition as Record<string, unknown>;
+        const ftsConfig = fieldRecord.fts;
+        if (!ftsConfig || typeof ftsConfig !== 'object') {
             return;
         }
         fields.push({
             field: fieldName,
-            config: ftsConfig
+            config: ftsConfig as FlexSearchFieldConfig
         });
     });
 
     return fields.length === 0 ? null : { fields, primaryPath };
-}
-
-/**
- * Extracts the `fts` property from a schema field definition.
- */
-export function getFieldFlexSearchConfig(
-    fieldDefinition: unknown
-): FlexSearchFieldConfig | undefined {
-    if (!fieldDefinition || typeof fieldDefinition !== 'object') {
-        return undefined;
-    }
-    const fieldRecord = fieldDefinition as Record<string, unknown>;
-    const ftsConfig = fieldRecord.fts;
-    if (!ftsConfig || typeof ftsConfig !== 'object') {
-        return undefined;
-    }
-    return ftsConfig as FlexSearchFieldConfig;
 }
 
 /**
