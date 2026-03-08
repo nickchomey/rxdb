@@ -11,9 +11,7 @@ import {
     flatClone,
     getDefaultRevision,
     getDefaultRxDocumentMeta,
-    now,
-    arrayBufferToBase64,
-    base64ToArrayBuffer
+    now
 } from '../utils/index.ts';
 import { decompress } from 'flexsearch';
 import type { RxStorageDefaultCheckpoint } from '../../types/index.d.ts';
@@ -42,26 +40,16 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         metaDocument &&
         metaDocument.version === FLEXSEARCH_META_VERSION &&
         metaDocument.schemaHash === state.schemaHash &&
-        metaDocument.serializedCompressed === true &&
-        typeof metaDocument.serialized === 'string' &&
-        metaDocument.serialized.startsWith('gz:')
+        Array.isArray(metaDocument.serialized) &&
+        metaDocument.serialized.length > 0
     );
 
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
     if (hasCompatibleSnapshot && metaDocument?.serialized) {
         try {
-            let serializedBody: string;
-            if (metaDocument.serializedCompressed) {
-                const encodedPayload = metaDocument.serialized.startsWith('gz:')
-                    ? metaDocument.serialized.slice(3)
-                    : metaDocument.serialized;
-                const compressedBytes = new Uint8Array(base64ToArrayBuffer(encodedPayload));
-                serializedBody = await decompress(compressedBytes);
-            } else {
-                serializedBody = metaDocument.serialized;
-            }
-
+            const compressedBytes = new Uint8Array(metaDocument.serialized);
+            const serializedBody = await decompress(compressedBytes);
             const inject = new Function('doc', serializedBody);
             inject(state.index);
             restoredFromSnapshot = true;
@@ -224,13 +212,9 @@ export async function persistIndexSnapshot(
     const compressedBytes = typeof serializedCompressed === 'string'
         ? new TextEncoder().encode(serializedCompressed)
         : serializedCompressed;
-    const base64Payload = arrayBufferToBase64(
-        new Uint8Array(compressedBytes).buffer
-    );
 
     await writeMetaDocument(state, databaseInstanceToken, {
-        serialized: `gz:${base64Payload}`,
-        serializedCompressed: true,
+        serialized: Array.from(compressedBytes),
         checkpointId: state.checkpoint?.id,
         checkpointLwt: state.checkpoint?.lwt
     });
