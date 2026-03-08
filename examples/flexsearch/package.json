@@ -1,0 +1,12 @@
+{
+  "name": "rxdb-flexsearch-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Example app for RxDB FlexSearch storage wrapper",
+  "scripts": {
+    "prepare-data": "node ./scripts/prepare-data.mjs",
+    "start": "node ./src/app.mjs",
+    "search": "node ./src/app.mjs"
+  }
+}
