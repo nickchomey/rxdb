@@ -35,7 +35,10 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
     instance: any,
     databaseInstanceToken: string
 ): Promise<void> {
+    console.log('[FlexSearch init] Starting initialization');
     const metaDocument = await readMetaDocument(state);
+    console.log('[FlexSearch init] Meta document read:', metaDocument ? 'exists' : 'not found');
+    
     const hasCompatibleSnapshot = Boolean(
         metaDocument &&
         metaDocument.version === FLEXSEARCH_META_VERSION &&
@@ -43,16 +46,20 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         Array.isArray(metaDocument.serialized) &&
         metaDocument.serialized.length > 0
     );
+    console.log('[FlexSearch init] Compatible snapshot:', hasCompatibleSnapshot);
 
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
     if (hasCompatibleSnapshot && metaDocument?.serialized) {
         try {
+            console.log('[FlexSearch init] Decompressing snapshot...');
             const compressedBytes = new Uint8Array(metaDocument.serialized);
             const serializedBody = await decompress(compressedBytes);
+            console.log('[FlexSearch init] Injecting into index...');
             const inject = new Function('doc', serializedBody);
             inject(state.index);
             restoredFromSnapshot = true;
+            console.log('[FlexSearch init] Snapshot restored');
         } catch (error) {
             // Snapshot is optional; if restore fails we rebuild by catch-up/indexing path below.
             console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);
@@ -68,10 +75,16 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         }
     }
 
+    console.log('[FlexSearch init] Catching up from checkpoint...');
     const caughtUpChanges = await catchUpFromCheckpoint(state, instance, startCheckpoint);
+    console.log('[FlexSearch init] Caught up, had changes:', caughtUpChanges);
+    
     if (!restoredFromSnapshot || caughtUpChanges) {
+        console.log('[FlexSearch init] Persisting snapshot...');
         await persistIndexSnapshot(state, databaseInstanceToken);
+        console.log('[FlexSearch init] Snapshot persisted');
     }
+    console.log('[FlexSearch init] Initialization complete');
 }
 
 

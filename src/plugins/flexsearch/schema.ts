@@ -80,10 +80,7 @@ export function getFlexSearchMetaSchema(): RxJsonSchema<RxDocumentData<FlexSearc
             serialized: {
                 type: 'array',
                 items: {
-                    type: 'number',
-                    minimum: 0,
-                    maximum: 255,
-                    multipleOf: 1
+                    type: 'number'
                 }
             },
             checkpointId: {

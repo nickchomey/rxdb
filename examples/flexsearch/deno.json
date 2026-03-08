@@ -1,0 +1,18 @@
+{
+    "imports": {
+        "rxdb/": "../../",
+        "flexsearch": "../../node_modules/flexsearch/dist/flexsearch.bundle.module.min.mjs"
+    },
+    "tasks": {
+        "prepare-data": "node ./scripts/prepare-data.mjs",
+        "bundle": "deno bundle --platform=browser --external=worker_threads src/main.ts -o dist/bundle.js && cp src/style.css dist/",
+        "serve": "deno run --allow-net --allow-read jsr:@std/http/file-server -- . --port 8000"
+    },
+    "compilerOptions": {
+        "lib": [
+            "deno.window",
+            "dom"
+        ],
+        "strict": true
+    }
+}

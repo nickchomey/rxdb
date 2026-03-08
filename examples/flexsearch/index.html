@@ -5,11 +5,57 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RxDB FlexSearch Example</title>
+        <link rel="stylesheet" href="dist/style.css" />
 </head>
 
 <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <main class="page">
+        <section class="hero">
+            <p class="eyebrow">RxDB Example</p>
+            <h1>FlexSearch With Persistent Snapshot Restore</h1>
+            <p class="lede">
+                Load the Wikipedia-derived dataset into IndexedDB via Dexie, search it with the
+                FlexSearch storage wrapper, and reload the page to verify that the index comes back
+                from the persisted compressed snapshot instead of a full rebuild.
+            </p>
+        </section>
+    
+        <section class="controls card">
+            <div class="button-row">
+                <button id="load-button">Load Dataset</button>
+                <button id="clear-button" class="ghost">Clear Database</button>
+            </div>
+            <label class="search-label" for="query-input">Search</label>
+            <div class="search-row">
+                <input id="query-input" value="Philippe" placeholder="Search title or content" autofocus />
+                <button id="search-button">Search</button>
+            </div>
+            <div class="status-grid">
+                <div>
+                    <span class="status-label">Dataset</span>
+                    <span id="dataset-status">Not loaded</span>
+                </div>
+                <div>
+                    <span class="status-label">Snapshot</span>
+                    <span id="snapshot-status">Unknown</span>
+                </div>
+                <div>
+                    <span class="status-label">Storage</span>
+                    <span>Dexie / IndexedDB</span>
+                </div>
+            </div>
+        </section>
+    
+        <section class="results card">
+            <div class="results-head">
+                <h2>Results</h2>
+                <span id="result-count">0 matches</span>
+            </div>
+            <div id="results"></div>
+        </section>
+    </main>
+    
+    <script type="module" src="dist/bundle.js"></script>
 </body>
 
 </html>
