@@ -11,8 +11,11 @@ import {
     flatClone,
     getDefaultRevision,
     getDefaultRxDocumentMeta,
-    now
+    now,
+    arrayBufferToBase64,
+    base64ToArrayBuffer
 } from '../utils/index.ts';
+import { decompress } from 'flexsearch';
 import type { RxStorageDefaultCheckpoint } from '../../types/index.d.ts';
 import type {
     FlexSearchMetaDocument,
@@ -39,17 +42,35 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         metaDocument &&
         metaDocument.version === FLEXSEARCH_META_VERSION &&
         metaDocument.schemaHash === state.schemaHash &&
-        metaDocument.serialized
+        metaDocument.serializedCompressed === true &&
+        typeof metaDocument.serialized === 'string' &&
+        metaDocument.serialized.startsWith('gz:')
     );
 
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
     if (hasCompatibleSnapshot && metaDocument?.serialized) {
-        restoredFromSnapshot = await tryRestoreSnapshot(
-            state,
-            metaDocument,
-            databaseInstanceToken
-        );
+        try {
+            let serializedBody: string;
+            if (metaDocument.serializedCompressed) {
+                const encodedPayload = metaDocument.serialized.startsWith('gz:')
+                    ? metaDocument.serialized.slice(3)
+                    : metaDocument.serialized;
+                const compressedBytes = new Uint8Array(base64ToArrayBuffer(encodedPayload));
+                serializedBody = await decompress(compressedBytes);
+            } else {
+                serializedBody = metaDocument.serialized;
+            }
+
+            const inject = new Function('doc', serializedBody);
+            inject(state.index);
+            restoredFromSnapshot = true;
+        } catch (error) {
+            // Snapshot is optional; if restore fails we rebuild by catch-up/indexing path below.
+            console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);
+            restoredFromSnapshot = false;
+        }
+
         if (restoredFromSnapshot && metaDocument.checkpointId && typeof metaDocument.checkpointLwt === 'number') {
             startCheckpoint = {
                 id: metaDocument.checkpointId,
@@ -138,8 +159,12 @@ async function readMetaDocument(
     if (!state.metaStorage) {
         return undefined;
     }
-    const docs = await state.metaStorage.findDocumentsById([state.metaDocumentId], true);
-    return docs[0] as FlexSearchMetaDocumentData | undefined;
+    const docs = await state.metaStorage.findDocumentsById([state.metaDocumentId], false);
+    const doc = docs[0] as FlexSearchMetaDocumentData | undefined;
+    if (!doc || doc._deleted) {
+        return undefined;
+    }
+    return doc;
 }
 
 /**
@@ -188,21 +213,6 @@ async function writeMetaDocument(
 }
 
 /**
- * Clears the serialized snapshot and checkpoint from metadata.
- * Used when snapshot is corrupted or invalid.
- */
-async function clearMetaDocument(
-    state: FlexSearchRuntimeState,
-    databaseInstanceToken: string
-): Promise<void> {
-    await writeMetaDocument(state, databaseInstanceToken, {
-        serialized: undefined,
-        checkpointId: undefined,
-        checkpointLwt: undefined
-    });
-}
-
-/**
  * Persists the current index snapshot to metadata storage.
  * Updates checkpoint and resets persistence counters.
  */
@@ -210,38 +220,20 @@ export async function persistIndexSnapshot(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string
 ): Promise<void> {
-    const serialized = await state.index.serialize(false) as string;
+    const serializedCompressed = await state.index.serialize(false, true);
+    const compressedBytes = typeof serializedCompressed === 'string'
+        ? new TextEncoder().encode(serializedCompressed)
+        : serializedCompressed;
+    const base64Payload = arrayBufferToBase64(
+        new Uint8Array(compressedBytes).buffer
+    );
 
     await writeMetaDocument(state, databaseInstanceToken, {
-        serialized,
+        serialized: `gz:${base64Payload}`,
+        serializedCompressed: true,
         checkpointId: state.checkpoint?.id,
         checkpointLwt: state.checkpoint?.lwt
     });
     state.changesSinceLastPersist = 0;
     state.firstChangeAt = undefined;
-}
-
-/**
- * Attempts to restore FlexSearch index from serialized function body.
- * Uses Document.serialize() pattern: inject function body via new Function().
- * Returns true if restoration succeeded, false if corrupted/invalid.
- */
-export async function tryRestoreSnapshot(
-    state: FlexSearchRuntimeState,
-    metaDocument: FlexSearchMetaDocument,
-    databaseInstanceToken: string
-): Promise<boolean> {
-    try {
-        if (!metaDocument.serialized) {
-            return false;
-        }
-        // Create injection function from serialized body and execute with document instance
-        const inject = new Function('doc', metaDocument.serialized);
-        inject(state.index);
-        return true;
-    } catch (error) {
-        console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);
-        await clearMetaDocument(state, databaseInstanceToken);
-        return false;
-    }
 }

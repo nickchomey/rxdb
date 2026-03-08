@@ -80,6 +80,9 @@ export function getFlexSearchMetaSchema(): RxJsonSchema<RxDocumentData<FlexSearc
             serialized: {
                 type: 'string'
             },
+            serializedCompressed: {
+                type: 'boolean'
+            },
             checkpointId: {
                 type: 'string'
             },
