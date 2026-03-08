@@ -186,7 +186,7 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
                 collectionProto.fts = function (searchTerm: string, selector?: Record<string, unknown>) {
                     return this.find({
                         selector: {
-                            ...selector,
+                            ...(selector || {}),
                             $fts: searchTerm as never
                         }
                     });

@@ -40,6 +40,11 @@ type RxQueryWithCollection = {
  * 5. Sync rewritten query back to RxQuery for event-reduce
  */
 export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
+    // Safety check: ensure args exists and has mangoQuery
+    if (!args || !args.mangoQuery || !args.mangoQuery.selector) {
+        return;
+    }
+
     const selector = args.mangoQuery.selector as FlexSearchSelector;
 
     // Extract search term from $fts selector

@@ -1,15 +1,14 @@
-import './style.css';
 import {
     addRxPlugin,
     createRxDatabase
-} from '../../../plugins/core/index.mjs';
-import { getRxStorageDexie } from '../../../plugins/storage-dexie/index.mjs';
+} from 'rxdb/plugins/core/index.mjs';
+import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie/index.mjs';
 import {
     getFlexSearchState,
     RxDBFlexSearchPlugin,
     wrappedFlexSearchStorage,
     type FlexSearchMetaDocumentData
-} from '../../../plugins/flexsearch/index.mjs';
+} from 'rxdb/plugins/flexsearch/index.mjs';
 
 type WikiDoc = {
     id: string;
@@ -28,60 +27,14 @@ type WikiCollection = {
 
 addRxPlugin(RxDBFlexSearchPlugin);
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<main class="page">
-  <section class="hero">
-    <p class="eyebrow">RxDB Example</p>
-    <h1>FlexSearch With Persistent Snapshot Restore</h1>
-    <p class="lede">
-      Load the Wikipedia-derived dataset into IndexedDB via Dexie, search it with the new FlexSearch storage wrapper,
-      and reload the page to verify that the index comes back from the persisted serialized snapshot instead of a full rebuild.
-    </p>
-  </section>
-
-  <section class="controls card">
-    <div class="button-row">
-      <button id="load-button">Load Dataset</button>
-      <button id="clear-button" class="ghost">Clear Database</button>
-    </div>
-    <label class="search-label" for="query-input">Search</label>
-    <div class="search-row">
-      <input id="query-input" value="Philippe" placeholder="Search title or content" />
-      <button id="search-button">Search</button>
-    </div>
-    <div class="status-grid">
-      <div>
-        <span class="status-label">Dataset</span>
-        <span id="dataset-status">Not loaded</span>
-      </div>
-      <div>
-        <span class="status-label">Snapshot</span>
-        <span id="snapshot-status">Unknown</span>
-      </div>
-      <div>
-        <span class="status-label">Storage</span>
-        <span>Dexie / IndexedDB</span>
-      </div>
-    </div>
-  </section>
-
-  <section class="results card">
-    <div class="results-head">
-      <h2>Results</h2>
-      <span id="result-count">0 matches</span>
-    </div>
-    <div id="results"></div>
-  </section>
-</main>`;
-
-const loadButton = document.querySelector<HTMLButtonElement>('#load-button')!;
-const clearButton = document.querySelector<HTMLButtonElement>('#clear-button')!;
-const searchButton = document.querySelector<HTMLButtonElement>('#search-button')!;
-const queryInput = document.querySelector<HTMLInputElement>('#query-input')!;
-const datasetStatus = document.querySelector<HTMLElement>('#dataset-status')!;
-const snapshotStatus = document.querySelector<HTMLElement>('#snapshot-status')!;
-const resultCount = document.querySelector<HTMLElement>('#result-count')!;
-const results = document.querySelector<HTMLElement>('#results')!;
+const loadButton = document.getElementById('load-button') as HTMLButtonElement;
+const clearButton = document.getElementById('clear-button') as HTMLButtonElement;
+const searchButton = document.getElementById('search-button') as HTMLButtonElement;
+const queryInput = document.getElementById('query-input') as HTMLInputElement;
+const datasetStatus = document.getElementById('dataset-status') as HTMLElement;
+const snapshotStatus = document.getElementById('snapshot-status') as HTMLElement;
+const resultCount = document.getElementById('result-count') as HTMLElement;
+const results = document.getElementById('results') as HTMLElement;
 
 let dbPromise: Promise<any> | undefined;
 
@@ -138,9 +91,9 @@ async function getDatabase() {
 }
 
 async function loadDatasetFile(): Promise<WikiDoc[]> {
-    const response = await fetch('/items.transformed.json');
+    const response = await fetch('/public/items.transformed.json');
     if (!response.ok) {
-        throw new Error('Dataset file missing. Run `npm run prepare-data` in examples/flexsearch first.');
+        throw new Error('Dataset file missing. Run `deno task prepare-data` in examples/flexsearch first.');
     }
     return await response.json();
 }
@@ -168,6 +121,10 @@ async function updateStatus() {
 
 async function waitUntilIndexed(probeTerm: string) {
     const db = await getDatabase();
+    
+    // Don't wait for initPromise here - it creates a deadlock!
+    // This function is called during initial indexing, so init is already in progress.
+    
     for (let i = 0; i < 80; i++) {
         const docs = await db.items.find({
             selector: {
@@ -182,8 +139,9 @@ async function waitUntilIndexed(probeTerm: string) {
     }
 }
 
-function renderResults(query: string, docs: WikiDoc[]) {
-    resultCount.textContent = `${docs.length} matches for "${query}"`;
+function renderResults(query: string, docs: WikiDoc[], searchTimeMs?: number) {
+    const timing = searchTimeMs !== undefined ? ` (${searchTimeMs}ms)` : '';
+    resultCount.textContent = `${docs.length} matches for "${query}"${timing}`;
     results.innerHTML = docs.map((doc, index) => {
         const preview = doc.content.replace(/\s+/g, ' ').slice(0, 260);
         return `
@@ -198,22 +156,51 @@ function renderResults(query: string, docs: WikiDoc[]) {
 }
 
 async function loadData() {
+    console.log('[loadData] Starting...');
     loadButton.disabled = true;
     datasetStatus.textContent = 'Loading dataset...';
 
-    const db = await getDatabase();
-    const existing = await db.items.count().exec();
-    if (existing === 0) {
-        const docs = await loadDatasetFile();
-        await db.items.bulkInsert(docs);
-        const probeTerm = docs[0]?.title.split(/\s+/)[0];
-        if (probeTerm) {
-            await waitUntilIndexed(probeTerm);
+    try {
+        console.log('[loadData] Getting database...');
+        const db = await getDatabase();
+        console.log('[loadData] Database obtained, counting docs...');
+        const existing = await db.items.count().exec();
+        console.log(`[loadData] Existing docs: ${existing}`);
+        
+        if (existing === 0) {
+            console.log('[loadData] Loading dataset file...');
+            const docs = await loadDatasetFile();
+            console.log(`[loadData] Dataset loaded: ${docs.length} docs`);
+            
+            console.log('[loadData] Bulk inserting...');
+            await db.items.bulkInsert(docs);
+            console.log('[loadData] Bulk insert complete');
+            
+            const probeTerm = docs[0]?.title.split(/\s+/)[0];
+            if (probeTerm) {
+                console.log(`[loadData] Waiting for index: "${probeTerm}"...`);
+                await waitUntilIndexed(probeTerm);
+                console.log('[loadData] Index ready');
+            }
         }
-    }
 
-    await updateStatus();
-    loadButton.disabled = false;
+        console.log('[loadData] Updating status...');
+        await updateStatus();
+        console.log('[loadData] Status updated');
+        
+        // Wait a moment for persistence to trigger, then update status again
+        setTimeout(async () => {
+            console.log('[loadData] Updating status (delayed)...');
+            await updateStatus();
+            console.log('[loadData] Status updated (delayed)');
+        }, 1500);
+    } catch (error) {
+        console.error('[loadData] Error:', error);
+        datasetStatus.textContent = 'Error loading';
+    } finally {
+        console.log('[loadData] Re-enabling button');
+        loadButton.disabled = false;
+    }
 }
 
 async function runSearch() {
@@ -224,8 +211,13 @@ async function runSearch() {
     }
 
     const db = await getDatabase();
+
+    // Measure search time
+    const searchStart = performance.now();
     const docs = await db.items.fts(query).exec();
-    renderResults(query, docs.slice(0, 12));
+    const searchTime = Math.round(performance.now() - searchStart);
+    
+    renderResults(query, docs.slice(0, 12), searchTime);
     await updateStatus();
 }
 
