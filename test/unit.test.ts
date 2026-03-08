@@ -1,17 +1,15 @@
-import './unit/init.test.ts';
-import './unit/util.test.ts';
+import "./unit/init.test.ts";
+import "./unit/util.test.ts";
 
 /**
  * Helpers that
  * do not fully test RxDB but
  * just single methods
  */
-import './unit/custom-index.test.ts';
-import './unit/query-planner.test.ts';
+import "./unit/custom-index.test.ts";
+import "./unit/query-planner.test.ts";
 
-
-import './unit/internal-indexes.test.ts';
-
+import "./unit/internal-indexes.test.ts";
 
 /**
  * Move these tests around so that
@@ -19,9 +17,9 @@ import './unit/internal-indexes.test.ts';
  * your relevant tests run first.
  * Do not commit this file if you modified the order.
  */
-import './unit/rx-storage-implementations.test.ts';
-import './unit/rx-storage-query-correctness.test.ts';
-import './unit/rx-storage-helper.test.ts';
+import "./unit/rx-storage-implementations.test.ts";
+import "./unit/rx-storage-query-correctness.test.ts";
+import "./unit/rx-storage-helper.test.ts";
 
 import './unit/rx-storage-dexie.test.ts';
 import './unit/rx-storage-remote.test.ts';
@@ -38,6 +36,7 @@ import './unit/local-documents.test.ts';
 import './unit/change-event-buffer.test.ts';
 import './unit/reactive-query.test.ts';
 import './unit/key-compression.test.ts';
+import './unit/flexsearch.test.ts';
 import './unit/event-reduce.test.ts';
 import './unit/cache-replacement-policy.test.ts';
 import './unit/query-builder.test.ts';

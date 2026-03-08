@@ -306,6 +306,12 @@
       "import": "./dist/esm/plugins/encryption-crypto-js/index.js",
       "default": "./dist/esm/plugins/encryption-crypto-js/index.js"
     },
+    "./plugins/flexsearch": {
+      "types": "./dist/types/plugins/flexsearch/index.d.ts",
+      "require": "./dist/cjs/plugins/flexsearch/index.js",
+      "import": "./dist/esm/plugins/flexsearch/index.js",
+      "default": "./dist/esm/plugins/flexsearch/index.js"
+    },
     "./plugins/json-dump": {
       "types": "./dist/types/plugins/json-dump/index.d.ts",
       "require": "./dist/cjs/plugins/json-dump/index.js",
@@ -579,6 +585,7 @@
     "custom-idle-queue": "4.1.0",
     "dexie": "4.0.10",
     "event-reduce-js": "5.2.7",
+    "flexsearch": "file:../flexsearch",
     "get-graphql-from-jsonschema": "8.1.0",
     "graphql": "16.13.1",
     "graphql-ws": "5.16.2",
@@ -588,6 +595,7 @@
     "mingo": "7.2.0",
     "oblivious-set": "2.0.0",
     "reconnecting-websocket": "4.4.0",
+    "rxdb-premium": "16.21.1",
     "simple-peer": "9.11.1",
     "util": "0.12.5",
     "ws": "8.19.0",
