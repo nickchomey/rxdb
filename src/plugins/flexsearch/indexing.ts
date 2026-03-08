@@ -114,7 +114,20 @@ export async function catchUpFromCheckpoint<RxDocType, Internals, InstanceCreati
                 }
             });
         }
+
+        const previousCheckpoint = checkpoint;
         checkpoint = changed.checkpoint;
+
+        // Safety guard against broken storage implementations that return full batches
+        // but never advance checkpoints, which would otherwise loop forever.
+        if (
+            changed.documents.length >= CATCHUP_BATCH_SIZE &&
+            !checkpoint &&
+            !previousCheckpoint
+        ) {
+            break;
+        }
+
         if (changed.documents.length < CATCHUP_BATCH_SIZE) {
             break;
         }

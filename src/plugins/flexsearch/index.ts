@@ -33,7 +33,7 @@ import type { FlexSearchRuntimeState, FlexSearchWrapperConfig } from './types.ts
 import { computeSchemaHash, extractFlexSearchConfig, getFlexSearchMetaSchema, stripFlexSearchSchemaKeywords } from './schema.ts';
 import { createFlexSearchIndex, applyEventBulkToIndex } from './indexing.ts';
 import { initializeIndexState, schedulePersistence, enqueueStateWork } from './persistence.ts';
-import { getFlexSearchState as getRuntimeState, removeFlexSearchState, setFlexSearchState } from './runtime.ts';
+import { removeFlexSearchState, setFlexSearchState } from './runtime.ts';
 import { rewriteFtsSelector } from './query-rewrite.ts';
 
 // Constants
