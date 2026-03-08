@@ -360,7 +360,8 @@ describeParallel('flexsearch.test.ts', () => {
         await waitForPersistence();
         const persistedMeta = await readMetaState(first.db);
         assert.ok(persistedMeta);
-        assert.ok(typeof persistedMeta.serialized === 'string');
+        assert.ok(Array.isArray(persistedMeta.serialized));
+        assert.ok((persistedMeta.serialized?.length ?? 0) > 0);
         assert.strictEqual(persistedMeta.checkpointId, 'p1');
 
         await first.db.close();
@@ -469,7 +470,7 @@ describeParallel('flexsearch.test.ts', () => {
         const previous = (await metaStorage.findDocumentsById([FTS_META_DOC_ID], true))[0];
         assert.ok(previous);
         const corrupted = clone(previous) as FlexSearchMetaDocumentData;
-        corrupted.serialized = 'function inject(doc){ doc.__broken(';
+        corrupted.serialized = [1, 2, 3, 4, 5];
         corrupted._meta.lwt = previous._meta.lwt + 1;
         corrupted._rev = createRevision(first.db.token, previous);
         const corruptedWrite = await metaStorage.bulkWrite([
@@ -508,7 +509,8 @@ describeParallel('flexsearch.test.ts', () => {
         const repairedMeta = await readMetaState(second.db);
         assert.ok(repairedMeta);
         const repairedMetaTyped = repairedMeta as FlexSearchMetaDocumentData;
-        assert.ok(typeof repairedMetaTyped.serialized === 'string');
+        assert.ok(Array.isArray(repairedMetaTyped.serialized));
+        assert.ok((repairedMetaTyped.serialized?.length ?? 0) > 0);
         assert.notStrictEqual(repairedMetaTyped.serialized, corrupted.serialized);
 
         await second.db.remove();
@@ -564,8 +566,8 @@ describeParallel('flexsearch.test.ts', () => {
     it('schedules debounced persistence under burst writes', async () => {
         const { db, collection } = await createDatabase({
             persistence: {
-                minDebounce: 20,
-                maxDebounce: 120
+                minDebounce: 200,
+                maxDebounce: 400
             }
         });
 
@@ -575,15 +577,21 @@ describeParallel('flexsearch.test.ts', () => {
             { passportId: 'd3', firstName: 'Three', lastName: 'Writer', age: 12 }
         ]);
 
+        await AsyncTestUtil.waitUntil(async () => {
+            const state = getFlexSearchState(db.name, 'humans');
+            return Boolean(state && (state.changesSinceLastPersist ?? 0) >= 3);
+        });
+
         const state = getFlexSearchState(db.name, 'humans');
         assert.ok(state);
-        assert.ok((state?.changesSinceLastPersist ?? 0) >= 3);
+        assert.ok((state.changesSinceLastPersist ?? 0) >= 3);
 
-        await waitForPersistence();
+        await waitForPersistence(520);
 
         const meta = await readMetaState(db);
         assert.ok(meta);
-        assert.ok(typeof meta.serialized === 'string');
+        assert.ok(Array.isArray(meta.serialized));
+        assert.ok((meta.serialized?.length ?? 0) > 0);
         assert.strictEqual(getFlexSearchState(db.name, 'humans')?.changesSinceLastPersist, 0);
 
         await db.remove();

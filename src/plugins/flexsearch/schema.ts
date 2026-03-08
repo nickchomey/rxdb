@@ -78,10 +78,13 @@ export function getFlexSearchMetaSchema(): RxJsonSchema<RxDocumentData<FlexSearc
                 maxLength: 120
             },
             serialized: {
-                type: 'string'
-            },
-            serializedCompressed: {
-                type: 'boolean'
+                type: 'array',
+                items: {
+                    type: 'number',
+                    minimum: 0,
+                    maximum: 255,
+                    multipleOf: 1
+                }
             },
             checkpointId: {
                 type: 'string'

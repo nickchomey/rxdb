@@ -41,8 +41,7 @@ export type FlexSearchWrapperConfig = {
 
 export type FlexSearchMetaDocument = {
     id: string;
-    serialized?: string;
-    serializedCompressed?: boolean;
+    serialized?: number[];
     checkpointId?: string;
     checkpointLwt?: number;
     version: number;
