@@ -35,10 +35,8 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
     instance: any,
     databaseInstanceToken: string
 ): Promise<void> {
-    console.log('[FlexSearch init] Starting initialization');
     const metaDocument = await readMetaDocument(state);
-    console.log('[FlexSearch init] Meta document read:', metaDocument ? 'exists' : 'not found');
-    
+
     const hasCompatibleSnapshot = Boolean(
         metaDocument &&
         metaDocument.version === FLEXSEARCH_META_VERSION &&
@@ -46,20 +44,27 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         Array.isArray(metaDocument.serialized) &&
         metaDocument.serialized.length > 0
     );
-    console.log('[FlexSearch init] Compatible snapshot:', hasCompatibleSnapshot);
 
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
-    if (hasCompatibleSnapshot && metaDocument?.serialized) {
+    // FIXME: Snapshot restore disabled due to FlexSearch Document type serialization issues.
+    // When restore happens, the index becomes inaccessible (search returns empty).
+    // This appears to be a limitation with how FlexSearch's serialize() works for Document indexes.
+    // For now, we always rebuild from storage truth via catchup on reload.
+    if (false && hasCompatibleSnapshot && metaDocument?.serialized) {
         try {
-            console.log('[FlexSearch init] Decompressing snapshot...');
             const compressedBytes = new Uint8Array(metaDocument.serialized);
-            const serializedBody = await decompress(compressedBytes);
-            console.log('[FlexSearch init] Injecting into index...');
+            let serializedBody: string;
+            try {
+                // Backward compatible path for previously compressed snapshots.
+                serializedBody = await decompress(compressedBytes);
+            } catch {
+                // Current path stores plain UTF-8 encoded serialize(false) output.
+                serializedBody = new TextDecoder().decode(compressedBytes);
+            }
             const inject = new Function('doc', serializedBody);
             inject(state.index);
             restoredFromSnapshot = true;
-            console.log('[FlexSearch init] Snapshot restored');
         } catch (error) {
             // Snapshot is optional; if restore fails we rebuild by catch-up/indexing path below.
             console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);
@@ -75,16 +80,13 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
         }
     }
 
-    console.log('[FlexSearch init] Catching up from checkpoint...');
-    const caughtUpChanges = await catchUpFromCheckpoint(state, instance, startCheckpoint);
-    console.log('[FlexSearch init] Caught up, had changes:', caughtUpChanges);
-    
+    // Always run a full catch-up from storage truth to avoid stale/partial index states.
+    // This guarantees correctness even if a persisted snapshot was written before indexing completed.
+    const caughtUpChanges = await catchUpFromCheckpoint(state, instance, undefined);
+
     if (!restoredFromSnapshot || caughtUpChanges) {
-        console.log('[FlexSearch init] Persisting snapshot...');
         await persistIndexSnapshot(state, databaseInstanceToken);
-        console.log('[FlexSearch init] Snapshot persisted');
     }
-    console.log('[FlexSearch init] Initialization complete');
 }
 
 
@@ -221,13 +223,11 @@ export async function persistIndexSnapshot(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string
 ): Promise<void> {
-    const serializedCompressed = await state.index.serialize(false, true);
-    const compressedBytes = typeof serializedCompressed === 'string'
-        ? new TextEncoder().encode(serializedCompressed)
-        : serializedCompressed;
+    const serializedBody = state.index.serialize(false);
+    const persistedBytes = new TextEncoder().encode(serializedBody);
 
     await writeMetaDocument(state, databaseInstanceToken, {
-        serialized: Array.from(compressedBytes),
+        serialized: Array.from(persistedBytes),
         checkpointId: state.checkpoint?.id,
         checkpointLwt: state.checkpoint?.lwt
     });

@@ -14,6 +14,8 @@ type WikiDoc = {
     id: string;
     title: string;
     content: string;
+    // Synthesized field for faster single-field FTS
+    fulltext?: string;
 };
 
 type WikiCollection = {
@@ -21,7 +23,8 @@ type WikiCollection = {
         bulkInsert(docs: WikiDoc[]): Promise<unknown>;
         count(): { exec(): Promise<number> };
         find(query: { selector: Record<string, unknown>; limit?: number }): { exec(): Promise<WikiDoc[]> };
-        fts(searchTerm: string, selector?: Record<string, unknown>): { exec(): Promise<WikiDoc[]> };
+        findByIds(ids: string[]): { exec(): Promise<Map<string, any>> };
+        fts(searchTerm: string, selector?: Record<string, unknown>): { exec(): Promise<Map<string, any>> };
     };
 };
 
@@ -33,6 +36,7 @@ const searchButton = document.getElementById('search-button') as HTMLButtonEleme
 const queryInput = document.getElementById('query-input') as HTMLInputElement;
 const datasetStatus = document.getElementById('dataset-status') as HTMLElement;
 const snapshotStatus = document.getElementById('snapshot-status') as HTMLElement;
+const resultsTitle = document.getElementById('results-title') as HTMLElement;
 const resultCount = document.getElementById('result-count') as HTMLElement;
 const results = document.getElementById('results') as HTMLElement;
 
@@ -66,16 +70,17 @@ async function getDatabase() {
                                 maxLength: 120
                             },
                             title: {
-                                type: 'string',
-                                fts: {
-                                    tokenize: 'forward',
-                                    resolution: 9
-                                }
+                                type: 'string'
                             },
                             content: {
+                                type: 'string'
+                            },
+                            fulltext: {
                                 type: 'string',
                                 fts: {
-                                    tokenize: 'forward',
+                                    // Single composite field with strict tokenization
+                                    // This uses FlexSearch Index type (faster than Document)
+                                    tokenize: 'strict',
                                     resolution: 9
                                 }
                             }
@@ -84,6 +89,14 @@ async function getDatabase() {
                     }
                 }
             });
+
+            const state = getFlexSearchState(db.name, 'items');
+            if (state?.initPromise) {
+                void state.initPromise.then(() => {
+                    void updateStatus();
+                });
+            }
+
             return db;
         });
     }
@@ -112,19 +125,21 @@ async function updateStatus() {
     const docs = await state.metaStorage.findDocumentsById(['index-state'], false);
     const meta = docs[0] as FlexSearchMetaDocumentData | undefined;
     if (!meta?.serialized || meta.serialized.length === 0) {
-        snapshotStatus.textContent = 'No persisted snapshot yet';
+        snapshotStatus.textContent = state.initPromise
+            ? 'Initializing snapshot...'
+            : 'No persisted snapshot yet';
         return;
     }
 
-    snapshotStatus.textContent = `${meta.serialized.length.toLocaleString()} compressed bytes persisted`;
+    snapshotStatus.textContent = `${meta.serialized.length.toLocaleString()} serialized bytes persisted`;
 }
 
 async function waitUntilIndexed(probeTerm: string) {
     const db = await getDatabase();
-    
+
     // Don't wait for initPromise here - it creates a deadlock!
     // This function is called during initial indexing, so init is already in progress.
-    
+
     for (let i = 0; i < 80; i++) {
         const docs = await db.items.find({
             selector: {
@@ -140,8 +155,12 @@ async function waitUntilIndexed(probeTerm: string) {
 }
 
 function renderResults(query: string, docs: WikiDoc[], searchTimeMs?: number) {
-    const timing = searchTimeMs !== undefined ? ` (${searchTimeMs}ms)` : '';
-    resultCount.textContent = `${docs.length} matches for "${query}"${timing}`;
+    if (searchTimeMs !== undefined) {
+        resultsTitle.textContent = `Results (${searchTimeMs} ms)`;
+    } else {
+        resultsTitle.textContent = 'Results';
+    }
+    resultCount.textContent = `${docs.length} matches for "${query}"`;
     results.innerHTML = docs.map((doc, index) => {
         const preview = doc.content.replace(/\s+/g, ' ').slice(0, 260);
         return `
@@ -156,49 +175,43 @@ function renderResults(query: string, docs: WikiDoc[], searchTimeMs?: number) {
 }
 
 async function loadData() {
-    console.log('[loadData] Starting...');
     loadButton.disabled = true;
     datasetStatus.textContent = 'Loading dataset...';
 
     try {
-        console.log('[loadData] Getting database...');
         const db = await getDatabase();
-        console.log('[loadData] Database obtained, counting docs...');
         const existing = await db.items.count().exec();
-        console.log(`[loadData] Existing docs: ${existing}`);
-        
+
         if (existing === 0) {
-            console.log('[loadData] Loading dataset file...');
-            const docs = await loadDatasetFile();
-            console.log(`[loadData] Dataset loaded: ${docs.length} docs`);
-            
-            console.log('[loadData] Bulk inserting...');
+            let docs = await loadDatasetFile();
+            // Populate the fulltext field for single-field FTS (faster than multi-field)
+            docs = docs.map(doc => ({
+                ...doc,
+                fulltext: `${doc.title.toLowerCase()} ${doc.content.toLowerCase()}`
+            }));
             await db.items.bulkInsert(docs);
-            console.log('[loadData] Bulk insert complete');
-            
+
             const probeTerm = docs[0]?.title.split(/\s+/)[0];
             if (probeTerm) {
-                console.log(`[loadData] Waiting for index: "${probeTerm}"...`);
                 await waitUntilIndexed(probeTerm);
-                console.log('[loadData] Index ready');
             }
         }
 
-        console.log('[loadData] Updating status...');
+        const state = getFlexSearchState(db.name, 'items');
+        if (state?.writeQueue) {
+            await state.writeQueue;
+        }
+
         await updateStatus();
-        console.log('[loadData] Status updated');
-        
+
         // Wait a moment for persistence to trigger, then update status again
         setTimeout(async () => {
-            console.log('[loadData] Updating status (delayed)...');
             await updateStatus();
-            console.log('[loadData] Status updated (delayed)');
         }, 1500);
     } catch (error) {
         console.error('[loadData] Error:', error);
         datasetStatus.textContent = 'Error loading';
     } finally {
-        console.log('[loadData] Re-enabling button');
         loadButton.disabled = false;
     }
 }
@@ -212,12 +225,19 @@ async function runSearch() {
 
     const db = await getDatabase();
 
-    // Measure search time
+    // Measure search time with detailed breakdown
     const searchStart = performance.now();
-    const docs = await db.items.fts(query).exec();
+    console.time('[FlexSearch App] fts() total');
+    const docsMap = await db.items.fts(query).exec();
+    console.timeEnd('[FlexSearch App] fts() total');
     const searchTime = Math.round(performance.now() - searchStart);
-    
-    renderResults(query, docs.slice(0, 12), searchTime);
+
+    // Convert Map to array
+    const docs = Array.from(docsMap.values());
+    console.log(`[FlexSearch App] Search completed in ${searchTime}ms: ${docs.length} results from query "${query}"`);
+
+    // renderResults(query, docs.slice(0, 12), searchTime);
+    renderResults(query, docs, searchTime);
     await updateStatus();
 }
 
@@ -226,6 +246,7 @@ async function clearDatabase() {
     await db.remove();
     dbPromise = undefined;
     results.innerHTML = '';
+    resultsTitle.textContent = 'Results';
     resultCount.textContent = '0 matches';
     datasetStatus.textContent = 'Cleared';
     snapshotStatus.textContent = 'Cleared';
