@@ -93,6 +93,9 @@ export async function catchUpFromCheckpoint<RxDocType, Internals, InstanceCreati
 ): Promise<boolean> {
     let checkpoint = startCheckpoint;
     let hasChanges = false;
+    let totalDocsProcessed = 0;
+
+    console.log('[FlexSearch Catchup] Starting with checkpoint:', startCheckpoint);
 
     while (true) {
         const changed = await getChangedDocumentsSince(
@@ -102,6 +105,8 @@ export async function catchUpFromCheckpoint<RxDocType, Internals, InstanceCreati
         );
         if (changed.documents.length > 0) {
             hasChanges = true;
+            totalDocsProcessed += changed.documents.length;
+            console.log('[FlexSearch Catchup] Processing', changed.documents.length, 'documents, total:', totalDocsProcessed);
             changed.documents.forEach(documentData => {
                 const primaryValue = getPrimaryValue(documentData, state.primaryPath);
                 if (!primaryValue) {
