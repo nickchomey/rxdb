@@ -31,9 +31,9 @@ import type { FlexSearchRuntimeState, FlexSearchWrapperConfig } from './types.ts
 
 // Module imports
 import { computeSchemaHash, extractFlexSearchConfig, getFlexSearchMetaSchema, stripFlexSearchSchemaKeywords } from './schema.ts';
-import { createFlexSearchIndex, applyEventBulkToIndex } from './indexing.ts';
+import { createFlexSearchIndex, catchUpFromCheckpoint } from './indexing.ts';
 import { initializeIndexState, schedulePersistence, enqueueStateWork } from './persistence.ts';
-import { removeFlexSearchState, setFlexSearchState } from './runtime.ts';
+import { removeFlexSearchState, setFlexSearchState, getFlexSearchState } from './runtime.ts';
 import { rewriteFtsSelector } from './query-rewrite.ts';
 
 // Constants
@@ -133,18 +133,22 @@ export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
                 state,
                 instance,
                 params.databaseInstanceToken
-            );
+            ).finally(() => {
+                state.initPromise = undefined;
+            });
 
-            // Subscribe to change stream for real-time sync
-            state.changeStreamSubscription = instance.changeStream().subscribe(eventBulk => {
+            // Keep index in sync after writes by catching up from the last checkpoint.
+            const originalInstanceBulkWrite = instance.bulkWrite.bind(instance);
+            instance.bulkWrite = async (documentWrites: any[], context: string) => {
+                const writeResult = await originalInstanceBulkWrite(documentWrites, context);
                 void enqueueStateWork(state, async () => {
-                    await state.initPromise;
-                    applyEventBulkToIndex(state, eventBulk);
-                    if (persistence) {
+                    const hadChanges = await catchUpFromCheckpoint(state, instance, state.checkpoint);
+                    if (hadChanges && persistence) {
                         schedulePersistence(state, persistence, params.databaseInstanceToken);
                     }
                 });
-            });
+                return writeResult;
+            };
 
             // Wrap storage instance to hook close/remove
             const wrappedInstance = wrapRxStorageInstance(
@@ -153,6 +157,9 @@ export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
                 doc => doc as any,
                 doc => doc as any
             );
+
+            // Attach FlexSearch state to wrapped instance so it's accessible from collection
+            (wrappedInstance as any)._flexSearchState = state;
 
             // Hook cleanup into close/remove
             const originalClose = wrappedInstance.close.bind(wrappedInstance);
@@ -184,12 +191,106 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
             const collectionProto = proto as FlexSearchCollectionPrototype;
             if (!collectionProto.fts) {
                 collectionProto.fts = function (searchTerm: string, selector?: Record<string, unknown>) {
-                    return this.find({
-                        selector: {
-                            ...(selector || {}),
-                            $fts: searchTerm as never
+                    console.log('[FlexSearch] .fts() method called with searchTerm:', searchTerm);
+
+                    // Get the FlexSearch state using the global state manager
+                    // (can't use storageInstance because it gets wrapped multiple times)
+                    const database = (this as any).database;
+                    const collectionName = (this as any).name;
+                    const flexSearchState = getFlexSearchState(database.name, collectionName);
+
+                    if (!flexSearchState) {
+                        console.log('[FlexSearch] No FlexSearch state, falling back to find()');
+                        // Fallback: no FTS available, use normal find with $fts selector
+                        // The query hook will attempt to process it, or it will fail gracefully
+                        return this.find({
+                            selector: {
+                                ...(selector || {}),
+                                $fts: searchTerm as never
+                            }
+                        });
+                    }
+
+                    // Search FlexSearch index directly to get matching IDs
+                    const searchStart = performance.now();
+                    const matchingIds = ((): string[] => {
+                        try {
+                            const searchResult = flexSearchState.index.search(searchTerm);
+                            if (!Array.isArray(searchResult) || searchResult.length === 0) {
+                                return [];
+                            }
+
+                            const firstRow = searchResult[0];
+                            let idSet = new Set<string>();
+
+                            // Check if Document search format: [{ field: string, result: string[] }]
+                            if (firstRow && typeof firstRow === 'object' && 'result' in firstRow && Array.isArray((firstRow as any).result)) {
+                                // Document search: flatten all result arrays
+                                searchResult.forEach(row => {
+                                    if (row && typeof row === 'object' && 'result' in row && Array.isArray((row as any).result)) {
+                                        (row as any).result.forEach((idValue: unknown) => {
+                                            if (typeof idValue === 'string' || typeof idValue === 'number') {
+                                                idSet.add(String(idValue));
+                                                return;
+                                            }
+                                            if (idValue && typeof idValue === 'object') {
+                                                const valueObject = idValue as Record<string, unknown>;
+                                                if (typeof valueObject.id === 'string' || typeof valueObject.id === 'number') {
+                                                    idSet.add(String(valueObject.id));
+                                                    return;
+                                                }
+                                                const docObject = valueObject.doc as Record<string, unknown> | undefined;
+                                                if (docObject && (typeof docObject.id === 'string' || typeof docObject.id === 'number')) {
+                                                    idSet.add(String(docObject.id));
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                            } else {
+                                // Index search: direct ID array
+                                idSet = new Set(searchResult.map(idValue => String(idValue)));
+                            }
+
+                            return Array.from(idSet);
+                        } catch (error) {
+                            console.error('[FlexSearch] search failed', error);
+                            return [];
                         }
-                    });
+                    })();
+                    const searchDuration = performance.now() - searchStart;
+
+                    if (searchDuration > 5) {
+                        console.debug(`[FlexSearch] FTS search: ${matchingIds.length} IDs in ${searchDuration.toFixed(2)}ms`);
+                    }
+
+                    // Check if there are other selectors besides the FTS query
+                    const hasOtherSelectors = selector && Object.keys(selector).length > 0;
+
+                    if (!hasOtherSelectors && matchingIds.length > 0) {
+                        // OPTIMIZATION: Pure FTS query with no other filters - use findByIds() for fastest lookup
+                        // This bypasses the normal query path and does direct primary key lookup
+                        // which is much faster than table scan + filtering
+                        console.log('[FlexSearch] Using findByIds optimization for pure FTS query');
+                        return this.findByIds(matchingIds);
+                    } else if (!hasOtherSelectors) {
+                        // No matching FTS results - return empty query using findByIds([])
+                        console.log('[FlexSearch] Using findByIds with empty results');
+                        return this.findByIds([]);
+                    } else {
+                        // Query has OTHER selectors besides FTS - need to combine them
+                        // Use find() with the full selector, letting the query hook handle rewriting
+                        console.log('[FlexSearch] Combining FTS with other selectors, using find()');
+                        const primaryPath = this.schema.primaryPath as string;
+                        return this.find({
+                            selector: {
+                                ...selector,
+                                [primaryPath]: {
+                                    $in: matchingIds
+                                }
+                            }
+                        });
+                    }
                 };
             }
         }

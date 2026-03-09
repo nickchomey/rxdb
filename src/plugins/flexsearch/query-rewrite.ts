@@ -45,6 +45,7 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
         return;
     }
 
+    const rewriteStart = performance.now();
     const selector = args.mangoQuery.selector as FlexSearchSelector;
 
     // Extract search term from $fts selector
@@ -74,7 +75,10 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
         return;
     }
 
+    const searchStart = performance.now();
     const matchingIds = searchFlexIds(state, searchTerm);
+    const searchDuration = performance.now() - searchStart;
+    console.log(`[FlexSearch] Query hook search: ${matchingIds.length} IDs found in ${searchDuration.toFixed(2)}ms`);
     const baseSelector = flatClone(selector);
     delete baseSelector.$fts;
 
@@ -106,6 +110,11 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
         ...idSelector
     };
     syncRewrittenMangoQuery(args);
+
+    const totalDuration = performance.now() - rewriteStart;
+    if (totalDuration > 2) {
+        console.log(`[FlexSearch] Query rewrite complete in ${totalDuration.toFixed(2)}ms`);
+    }
 }
 
 
@@ -118,30 +127,60 @@ function searchFlexIds(
     searchTerm: string
 ): string[] {
     try {
+        // Time the FlexSearch search operation
+        const searchStartTime = performance.now();
         const searchResult = state.index.search(searchTerm);
+        const searchDuration = performance.now() - searchStartTime;
 
         // Normalize FlexSearch results to string array
         if (!Array.isArray(searchResult) || searchResult.length === 0) {
+            if (searchDuration > 10) {
+                console.debug(`[FlexSearch] No results found in ${searchDuration.toFixed(2)}ms for query: "${searchTerm}"`);
+            }
             return [];
         }
 
+        const extractStartTime = performance.now();
         const firstRow = searchResult[0];
+        let idSet = new Set<string>();
+
         // Check if Document search format: [{ field: string, result: string[] }]
         if (firstRow && typeof firstRow === 'object' && 'result' in firstRow && Array.isArray((firstRow as any).result)) {
             // Document search: flatten all result arrays
-            const idSet = new Set<string>();
             searchResult.forEach(row => {
                 if (row && typeof row === 'object' && 'result' in row && Array.isArray((row as any).result)) {
                     (row as any).result.forEach((idValue: unknown) => {
-                        idSet.add(String(idValue));
+                        if (typeof idValue === 'string' || typeof idValue === 'number') {
+                            idSet.add(String(idValue));
+                            return;
+                        }
+                        if (idValue && typeof idValue === 'object') {
+                            const valueObject = idValue as Record<string, unknown>;
+                            if (typeof valueObject.id === 'string' || typeof valueObject.id === 'number') {
+                                idSet.add(String(valueObject.id));
+                                return;
+                            }
+                            const docObject = valueObject.doc as Record<string, unknown> | undefined;
+                            if (docObject && (typeof docObject.id === 'string' || typeof docObject.id === 'number')) {
+                                idSet.add(String(docObject.id));
+                            }
+                        }
                     });
                 }
             });
-            return Array.from(idSet);
+        } else {
+            // Index search: direct ID array
+            idSet = new Set(searchResult.map(idValue => String(idValue)));
         }
 
-        // Index search: direct ID array
-        return searchResult.map(idValue => String(idValue));
+        const extractDuration = performance.now() - extractStartTime;
+        const resultCount = idSet.size;
+
+        if (searchDuration > 5 || extractDuration > 5) {
+            console.debug(`[FlexSearch] Search completed: ${searchDuration.toFixed(2)}ms search + ${extractDuration.toFixed(2)}ms extraction = ${(searchDuration + extractDuration).toFixed(2)}ms total, ${resultCount} results for query: "${searchTerm}"`);
+        }
+
+        return Array.from(idSet);
     } catch (error) {
         console.error('[FlexSearch] search failed', error);
         return [];
