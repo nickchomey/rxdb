@@ -47,24 +47,35 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
 
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
-    // FIXME: Snapshot restore disabled due to FlexSearch Document type serialization issues.
-    // When restore happens, the index becomes inaccessible (search returns empty).
-    // This appears to be a limitation with how FlexSearch's serialize() works for Document indexes.
-    // For now, we always rebuild from storage truth via catchup on reload.
-    if (false && hasCompatibleSnapshot && metaDocument?.serialized) {
+    if (hasCompatibleSnapshot && metaDocument?.serialized) {
+        console.log('[FlexSearch] Attempting snapshot restore, serialized length:', metaDocument.serialized.length);
         try {
             const compressedBytes = new Uint8Array(metaDocument.serialized);
             let serializedBody: string;
             try {
                 // Backward compatible path for previously compressed snapshots.
                 serializedBody = await decompress(compressedBytes);
+                console.log('[FlexSearch] Decompressed snapshot, body length:', serializedBody.length);
             } catch {
                 // Current path stores plain UTF-8 encoded serialize(false) output.
                 serializedBody = new TextDecoder().decode(compressedBytes);
+                console.log('[FlexSearch] Decoded UTF-8 snapshot, body length:', serializedBody.length);
             }
-            const inject = new Function('doc', serializedBody);
-            inject(state.index);
+            console.log('[FlexSearch] Creating inject function and calling with index');
+            // CRITICAL: FlexSearch serialize() returns a function that expects to be called
+            // with the Document instance as 'this'. We must use .call() not direct invocation.
+            const inject = new Function(serializedBody);
+            inject.call(state.index);
             restoredFromSnapshot = true;
+            console.log('[FlexSearch] Snapshot restored successfully');
+            
+            // Test the restored index
+            try {
+                const testResult = state.index.search('test');
+                console.log('[FlexSearch] Post-restore test search for "test":', testResult);
+            } catch (e) {
+                console.error('[FlexSearch] Error testing restored index:', e);
+            }
         } catch (error) {
             // Snapshot is optional; if restore fails we rebuild by catch-up/indexing path below.
             console.error('[FlexSearch] snapshot restore failed, rebuilding index', error);
@@ -77,12 +88,20 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
                 lwt: metaDocument.checkpointLwt
             };
             state.checkpoint = startCheckpoint;
+            console.log('[FlexSearch] Set checkpoint from snapshot:', startCheckpoint);
         }
     }
 
-    // Always run a full catch-up from storage truth to avoid stale/partial index states.
-    // This guarantees correctness even if a persisted snapshot was written before indexing completed.
-    const caughtUpChanges = await catchUpFromCheckpoint(state, instance, undefined);
+    // CRITICAL FIX: Only do full catchup if snapshot restore failed or didn't exist.
+    // If we restored from snapshot, only catch up changes AFTER the snapshot checkpoint.
+    // This prevents rebuilding the entire index and interfering with the restored state.
+    console.log('[FlexSearch] Starting catchup, restoredFromSnapshot:', restoredFromSnapshot, 'startCheckpoint:', startCheckpoint);
+    const caughtUpChanges = await catchUpFromCheckpoint(
+        state, 
+        instance, 
+        restoredFromSnapshot ? startCheckpoint : undefined
+    );
+    console.log('[FlexSearch] Catchup complete, had changes:', caughtUpChanges);
 
     if (!restoredFromSnapshot || caughtUpChanges) {
         await persistIndexSnapshot(state, databaseInstanceToken);
