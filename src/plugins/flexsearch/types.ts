@@ -15,7 +15,8 @@ export type FlexSearchIndexedDocument = Record<
  * that we allow inside schema `fts` metadata.
  */
 export type FlexSearchFieldConfig = {
-    tokenize?: 'strict' | 'forward' | 'reverse' | 'full';
+    tokenize?: 'strict' | 'forward' | 'reverse' | 'bidirectional' | 'full' | 'tolerant';
+    encode?: 'Exact' | 'Default' | 'Normalize' | 'LatinBalance' | 'LatinAdvanced' | 'LatinExtra' | 'LatinSoundex' | 'CJK';
     resolution?: number;
     context?: boolean | {
         resolution?: number;
@@ -25,6 +26,25 @@ export type FlexSearchFieldConfig = {
     minlength?: number;
     cache?: boolean | number;
     async?: boolean;
+    /**
+     * Field priority/weighting for score boosting in multi-field Document search.
+     * Higher values rank matches in this field above matches in lower-priority fields.
+     * E.g. set title to 9 and content to 1 to boost title matches 9x.
+     */
+    priority?: number;
+};
+
+/**
+ * Options passed to the FlexSearch Document.search() call.
+ * Mirrors the FlexSearch DocumentSearchOptions type for the fields we expose.
+ */
+export type FlexSearchSearchOptions = {
+    /** Maximum number of results to return. */
+    limit?: number;
+    /** Enable fuzzy/suggestion mode - returns results even with partial/typo mismatches. */
+    suggest?: boolean;
+    /** Restrict the search to specific indexed fields. */
+    field?: string | string[];
 };
 
 export type FlexSearchPersistenceConfig = {
