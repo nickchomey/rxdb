@@ -16,7 +16,16 @@ export type FlexSearchIndexedDocument = Record<
  */
 export type FlexSearchFieldConfig = {
     tokenize?: 'strict' | 'forward' | 'reverse' | 'bidirectional' | 'full' | 'tolerant';
-    encode?: 'Exact' | 'Default' | 'Normalize' | 'LatinBalance' | 'LatinAdvanced' | 'LatinExtra' | 'LatinSoundex' | 'CJK';
+    /**
+     * Built-in encoder name. Corresponds to the `Charset.*` presets in FlexSearch
+     * (e.g. `Charset.LatinAdvanced`). Use `'LatinSoundex'` for phonetic/fuzzy search.
+     */
+    encoder?: 'Exact' | 'Default' | 'Normalize' | 'LatinBalance' | 'LatinAdvanced' | 'LatinExtra' | 'LatinSoundex' | 'CJK';
+    /**
+     * Number of index resolution slots. Higher values allow finer relevance scoring.
+     * Boost a field's relevance relative to others by giving it a higher resolution.
+     * E.g. title: resolution 9, content: resolution 3 makes title matches rank higher.
+     */
     resolution?: number;
     context?: boolean | {
         resolution?: number;
@@ -26,25 +35,55 @@ export type FlexSearchFieldConfig = {
     minlength?: number;
     cache?: boolean | number;
     async?: boolean;
-    /**
-     * Field priority/weighting for score boosting in multi-field Document search.
-     * Higher values rank matches in this field above matches in lower-priority fields.
-     * E.g. set title to 9 and content to 1 to boost title matches 9x.
-     */
-    priority?: number;
 };
 
 /**
- * Options passed to the FlexSearch Document.search() call.
- * Mirrors the FlexSearch DocumentSearchOptions type for the fields we expose.
+ * Options passed directly to FlexSearch Document.search().
+ * Mirrors FlexSearch's SearchOptions + DocumentSearchOptions.
+ *
+ * When passed as the first argument to fts(), the `query` property carries the search term.
+ * This matches FlexSearch's own `search(options)` overload where options.query is the term.
  */
 export type FlexSearchSearchOptions = {
+    /** The search query string. Use this when passing a full options object instead of a bare string. */
+    query?: string;
     /** Maximum number of results to return. */
     limit?: number;
-    /** Enable fuzzy/suggestion mode - returns results even with partial/typo mismatches. */
+    /** Number of results to skip (for pagination). */
+    offset?: number;
+    /** Enable suggestion mode — returns results even for partial/unmatched terms (fuzzy). */
     suggest?: boolean;
-    /** Restrict the search to specific indexed fields. */
+    /** Override the resolution (scoring granularity) for this search. */
+    resolution?: number;
+    /** Enable contextual/phrase search mode. */
+    context?: boolean;
+    /** Use the search result cache. */
+    cache?: boolean;
+    /**
+     * Restrict search to one or more indexed fields.
+     * Field names must match those defined in the schema `fts` config.
+     */
     field?: string | string[];
+    /**
+     * Tag filter: `{ fieldName: tagValue }`.
+     * Only returns documents matching the given tag.
+     */
+    tag?: Record<string, string> | Array<Record<string, string>>;
+    /**
+     * Include full document data alongside IDs in the raw FlexSearch result.
+     * Our ID extraction handles enriched results; the doc data is ignored.
+     */
+    enrich?: boolean;
+    /**
+     * Search only the given single field and return a flat result array.
+     * Equivalent to `field` but produces a simpler (un-grouped) result shape.
+     */
+    pluck?: string;
+    /**
+     * Merge multi-field results into a single array grouped by document ID.
+     * Each result item has `{ id, field[] }`. Our extraction reads `id` directly.
+     */
+    merge?: boolean;
 };
 
 export type FlexSearchPersistenceConfig = {

@@ -23,7 +23,7 @@ type WikiCollection = {
         count(): { exec(): Promise<number> };
         find(query: { selector: Record<string, unknown>; limit?: number }): { exec(): Promise<WikiDoc[]> };
         findByIds(ids: string[]): { exec(): Promise<Map<string, any>> };
-        fts(query?: string | Record<string, unknown>, limitOrOptions?: number | Record<string, unknown>, options?: Record<string, unknown>, selector?: Record<string, unknown>): { exec(): Promise<WikiDoc[]> };
+        fts(queryOrOptions?: string | Record<string, unknown>, selector?: Record<string, unknown>): { exec(): Promise<WikiDoc[]> };
     };
 };
 
@@ -78,18 +78,16 @@ async function getDatabase(): Promise<WikiDatabase> {
                             title: {
                                 type: 'string',
                                 fts: {
-                                    // Title is boosted 9x over content - exact/forward prefix matching
+                                    // Higher resolution boosts title matches above content in scoring
                                     tokenize: 'forward',
-                                    resolution: 9,
-                                    priority: 9
+                                    resolution: 9
                                 }
                             },
                             content: {
                                 type: 'string',
                                 fts: {
                                     tokenize: 'forward',
-                                    resolution: 9,
-                                    priority: 1
+                                    resolution: 3
                                 }
                             },
                             titleLength: {
@@ -240,7 +238,7 @@ async function runSearch() {
     const searchStart = performance.now();
     console.time('[FlexSearch App] fts() total');
     // Search with suggest:true for fuzzy/tolerant matching, and filter by titleLength > 5
-    const docs = await db.items.fts(query, { suggest: true }, undefined, { titleLength: { $gt: 5 } }).exec();
+    const docs = await db.items.fts({ query, suggest: true }, { titleLength: { $gt: 5 } }).exec();
     console.timeEnd('[FlexSearch App] fts() total');
     const searchTime = Math.round(performance.now() - searchStart);
 

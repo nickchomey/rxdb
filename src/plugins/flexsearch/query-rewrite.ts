@@ -12,9 +12,9 @@ import { getFlexSearchState } from './runtime.ts';
 /**
  * FlexSearch selector type with $fts operator.
  * The $fts value can be:
- * - A plain string: used as the search query.
- * - An object with $eq: used as a strict equality query match.
- * - A FlexSearchSearchOptions object (with optional `query` field): passed directly to FlexSearch.
+ * - A plain string: used directly as the search query.
+ * - An object with $eq: coerced to a plain string (legacy equality form).
+ * - A FlexSearchSearchOptions object: passed directly to FlexSearch (use `query` property for the term).
  */
 type FlexSearchSelector = MangoQuerySelector<Record<string, unknown>> & {
     $fts?: unknown;
@@ -30,14 +30,12 @@ type RxQueryWithCollection = {
     };
 };
 
-
-
 /**
  * Rewrites RxDB query selector to replace $fts with primaryKey $in filter.
  * This is the core query integration point for the plugin.
  *
  * Flow:
- * 1. Extract $fts search term from selector
+ * 1. Extract $fts value from selector (string, legacy $eq, or full options object)
  * 2. Search FlexSearch index for matching IDs
  * 3. Remove $fts from selector
  * 4. Inject primaryKey: { $in: [...matchingIds] }
@@ -51,42 +49,21 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
 
     const rewriteStart = performance.now();
     const selector = args.mangoQuery.selector as FlexSearchSelector;
-
-    // Extract search term and options from $fts selector.
-    // Supported forms:
-    //   $fts: "searchTerm"                  -> plain query string
-    //   $fts: { $eq: "searchTerm" }         -> legacy equality form
-    //   $fts: { query: "...", limit: 5, suggest: true, field: [...] }  -> full options object
     const ftsValue = selector?.$fts;
-    let searchQuery: string | undefined;
-    let searchOptions: FlexSearchSearchOptions = {};
 
+    // Normalize $fts value to string or FlexSearchSearchOptions:
+    //   $fts: "term"           → search("term")
+    //   $fts: { $eq: "term" }  → search("term") (legacy RxDB equality form)
+    //   $fts: { ... }          → search(options) — options.query carries the search term
+    let queryOrOptions: string | FlexSearchSearchOptions;
     if (typeof ftsValue === 'string') {
-        searchQuery = ftsValue;
+        queryOrOptions = ftsValue;
     } else if (ftsValue && typeof ftsValue === 'object') {
         const valueRecord = ftsValue as Record<string, unknown>;
-        if (typeof valueRecord.$eq === 'string') {
-            // Legacy { $eq: "term" } form
-            searchQuery = valueRecord.$eq;
-        } else {
-            // Full options object: { query?, limit?, suggest?, field? }
-            if (typeof valueRecord.query === 'string') {
-                searchQuery = valueRecord.query;
-            }
-            if (typeof valueRecord.limit === 'number') {
-                searchOptions.limit = valueRecord.limit;
-            }
-            if (typeof valueRecord.suggest === 'boolean') {
-                searchOptions.suggest = valueRecord.suggest;
-            }
-            if (valueRecord.field !== undefined) {
-                searchOptions.field = valueRecord.field as string | string[];
-            }
-        }
-    }
-
-    // Require at least a query string or a non-empty options object to proceed
-    if (searchQuery === undefined && Object.keys(searchOptions).length === 0) {
+        queryOrOptions = typeof valueRecord.$eq === 'string'
+            ? valueRecord.$eq
+            : ftsValue as FlexSearchSearchOptions;
+    } else {
         return;
     }
 
@@ -104,7 +81,7 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
     }
 
     const searchStart = performance.now();
-    const matchingIds = searchFlexIds(state, searchQuery, searchOptions);
+    const matchingIds = searchFlexIds(state, queryOrOptions);
     const searchDuration = performance.now() - searchStart;
     console.log(`[FlexSearch] Query hook search: ${matchingIds.length} IDs found in ${searchDuration.toFixed(2)}ms`);
     const baseSelector = flatClone(selector);
@@ -145,68 +122,59 @@ export function rewriteFtsSelector(args: RxPluginPrePrepareQueryArgs): void {
     }
 }
 
-
 /**
- * Searches FlexSearch index for matching document IDs.
- * Returns empty array on error to prevent query failure.
+ * Searches the FlexSearch index and returns a flat deduplicated array of matching document IDs.
+ *
+ * Accepts either a plain query string or a FlexSearchSearchOptions object.
+ * When an options object is passed, FlexSearch's own argument normalization handles it
+ * (options.query carries the search term). This mirrors FlexSearch's own search() overloads.
+ *
+ * Handles all FlexSearch Document search result formats:
+ * - Standard:  [{ field, result: [id, ...] }, ...]  (default, enrich: false)
+ * - Enriched:  [{ field, result: [{ id, doc }, ...] }, ...]  (enrich: true)
+ * - Merged:    [{ id, field[], ... }, ...]  (merge: true)
+ * - Flat:      [id, ...]  (Index search, or pluck)
  */
-function searchFlexIds(
+export function searchFlexIds(
     state: FlexSearchRuntimeState,
-    query?: string,
-    options: FlexSearchSearchOptions = {}
+    queryOrOptions: string | FlexSearchSearchOptions = ''
 ): string[] {
     try {
-        // Time the FlexSearch search operation
-        const searchStartTime = performance.now();
-        const searchResult = query !== undefined
-            ? state.index.search(query, options as any)
-            : state.index.search(options as any);
-        const searchDuration = performance.now() - searchStartTime;
+        const searchResult = state.index.search(queryOrOptions as any);
 
-        // Normalize FlexSearch results to string array
         if (!Array.isArray(searchResult) || searchResult.length === 0) {
-            if (searchDuration > 10) {
-                console.debug(`[FlexSearch] No results found in ${searchDuration.toFixed(2)}ms`);
-            }
             return [];
         }
 
-        const extractStartTime = performance.now();
-        const firstRow = searchResult[0];
         const idSet = new Set<string>();
+        const firstRow = searchResult[0];
 
-        // Check if Document search format: [{ field: string, result: string[] }]
-        if (firstRow && typeof firstRow === 'object' && 'result' in firstRow && Array.isArray((firstRow as any).result)) {
-            // Document search: flatten all result arrays
-            for (const row of searchResult as Array<{ field?: string; result: unknown[] }>) {
-                for (const idValue of row.result) {
-                    if (typeof idValue === 'string' || typeof idValue === 'number') {
-                        idSet.add(String(idValue));
-                    } else if (idValue && typeof idValue === 'object') {
-                        const valueObject = idValue as Record<string, unknown>;
-                        if (typeof valueObject.id === 'string' || typeof valueObject.id === 'number') {
-                            idSet.add(String(valueObject.id));
-                        } else {
-                            const docObject = valueObject.doc as Record<string, unknown> | undefined;
-                            if (docObject && (typeof docObject.id === 'string' || typeof docObject.id === 'number')) {
-                                idSet.add(String(docObject.id));
-                            }
+        if (typeof firstRow === 'string' || typeof firstRow === 'number') {
+            // Flat format: plain ID array (Index search or pluck)
+            for (const id of searchResult as Array<string | number>) {
+                idSet.add(String(id));
+            }
+        } else if (firstRow && typeof firstRow === 'object') {
+            const first = firstRow as Record<string, unknown>;
+            if ('result' in first && Array.isArray(first.result)) {
+                // Standard Document format: [{ field, result: [id, ...] }, ...]
+                // Also handles enrich:true where result items are { id, doc }
+                for (const row of searchResult as Array<{ result: unknown[] }>) {
+                    for (const item of row.result) {
+                        if (typeof item === 'string' || typeof item === 'number') {
+                            idSet.add(String(item));
+                        } else if (item && typeof item === 'object') {
+                            const v = item as Record<string, unknown>;
+                            if (v.id !== undefined) idSet.add(String(v.id));
                         }
                     }
                 }
+            } else if (first.id !== undefined) {
+                // Merged format (merge:true): [{ id, field[], doc? }, ...]
+                for (const item of searchResult as Array<Record<string, unknown>>) {
+                    if (item.id !== undefined) idSet.add(String(item.id));
+                }
             }
-        } else {
-            // Index search: direct ID array
-            for (const idValue of searchResult as unknown[]) {
-                idSet.add(String(idValue));
-            }
-        }
-
-        const extractDuration = performance.now() - extractStartTime;
-        const resultCount = idSet.size;
-
-        if (searchDuration > 5 || extractDuration > 5) {
-            console.debug(`[FlexSearch] Search completed: ${searchDuration.toFixed(2)}ms search + ${extractDuration.toFixed(2)}ms extraction = ${(searchDuration + extractDuration).toFixed(2)}ms total, ${resultCount} results`);
         }
 
         return Array.from(idSet);

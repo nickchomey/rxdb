@@ -34,7 +34,7 @@ import { computeSchemaHash, extractFlexSearchConfig, getFlexSearchMetaSchema, st
 import { createFlexSearchIndex, catchUpFromCheckpoint } from './indexing.ts';
 import { initializeIndexState, schedulePersistence, enqueueStateWork } from './persistence.ts';
 import { removeFlexSearchState, setFlexSearchState, getFlexSearchState } from './runtime.ts';
-import { rewriteFtsSelector } from './query-rewrite.ts';
+import { rewriteFtsSelector, searchFlexIds } from './query-rewrite.ts';
 
 // Constants
 const FLEXSEARCH_META_COLLECTION_PREFIX = '_rxdb_flexsearch_meta_';
@@ -51,7 +51,7 @@ type WrappedStorageInstance<RxDocType, Internals, InstanceCreationOptions> = Awa
  * Collection protocol extension for .fts() helper method.
  */
 type FlexSearchCollectionPrototype = {
-    fts?: (query?: string | FlexSearchSearchOptions, limitOrOptions?: number | FlexSearchSearchOptions, options?: FlexSearchSearchOptions, selector?: Record<string, unknown>) => unknown;
+    fts?: (queryOrOptions?: string | FlexSearchSearchOptions, selector?: Record<string, unknown>) => unknown;
     find: (query: { selector: Record<string, unknown> }) => unknown;
     schema: {
         primaryPath: string;
@@ -194,55 +194,24 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
             const collectionProto = proto as FlexSearchCollectionPrototype;
             if (!collectionProto.fts) {
                 collectionProto.fts = function (
-                    query?: string | FlexSearchSearchOptions,
-                    limitOrOptions?: number | FlexSearchSearchOptions,
-                    options?: FlexSearchSearchOptions,
+                    queryOrOptions?: string | FlexSearchSearchOptions,
                     selector?: Record<string, unknown>
                 ) {
-                    // Normalize overloaded arguments to match FlexSearch Document.search() signature:
-                    // fts(query?, limit?, options?, selector?)
-                    // fts(query?, options?, selector?)
-                    let searchQuery: string | undefined;
-                    let searchOptions: FlexSearchSearchOptions = {};
-
-                    if (typeof query === 'object' && query !== null) {
-                        // fts(options) - first arg is the options object
-                        searchOptions = query;
-                        searchQuery = undefined;
-                    } else {
-                        searchQuery = query;
-                        if (typeof limitOrOptions === 'number') {
-                            searchOptions = { ...options, limit: limitOrOptions };
-                        } else if (limitOrOptions && typeof limitOrOptions === 'object') {
-                            searchOptions = limitOrOptions;
-                        } else if (options) {
-                            searchOptions = options;
-                        }
-                    }
-
-                    // Get the FlexSearch state
                     const database = (this as any).database;
                     const collectionName = (this as any).name;
                     const flexSearchState = getFlexSearchState(database.name, collectionName);
 
                     if (!flexSearchState) {
-                        // Fallback: no FTS configured, use normal find with $fts selector
-                        const ftsValue = searchQuery !== undefined
-                            ? searchQuery
-                            : searchOptions;
+                        // Fallback: no FTS configured, pass $fts through to the query rewrite hook
                         return this.find({
                             selector: {
                                 ...(selector || {}),
-                                $fts: ftsValue as never
+                                $fts: (queryOrOptions ?? '') as never
                             }
                         });
                     }
 
-                    // Search FlexSearch index directly to get matching IDs
-                    const matchingIds = extractFlexSearchIds(flexSearchState, searchQuery, searchOptions);
-
-                    // RxDB automatically optimizes $in on primaryPath to use findByIds-like mechanism,
-                    // before using QueryMatcher on the remainder of the query.
+                    const matchingIds = searchFlexIds(flexSearchState, queryOrOptions);
                     const primaryPath = this.schema.primaryPath as string;
                     return this.find({
                         selector: {
@@ -265,60 +234,6 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
         }
     }
 };
-
-/**
- * Searches the FlexSearch Document index and returns a deduplicated array of matching IDs.
- * Handles both Document search format (array of {field, result}) and Index search format (flat ID array).
- */
-function extractFlexSearchIds(
-    state: FlexSearchRuntimeState,
-    query?: string,
-    options: FlexSearchSearchOptions = {}
-): string[] {
-    try {
-        const searchResult = query !== undefined
-            ? state.index.search(query, options as any)
-            : state.index.search(options as any);
-
-        if (!Array.isArray(searchResult) || searchResult.length === 0) {
-            return [];
-        }
-
-        const firstRow = searchResult[0];
-        const idSet = new Set<string>();
-
-        // Document search format: [{ field: string, result: string[] }, ...]
-        if (firstRow && typeof firstRow === 'object' && 'result' in firstRow && Array.isArray((firstRow as any).result)) {
-            for (const row of searchResult as Array<{ field?: string; result: unknown[] }>) {
-                for (const idValue of row.result) {
-                    if (typeof idValue === 'string' || typeof idValue === 'number') {
-                        idSet.add(String(idValue));
-                    } else if (idValue && typeof idValue === 'object') {
-                        const v = idValue as Record<string, unknown>;
-                        if (typeof v.id === 'string' || typeof v.id === 'number') {
-                            idSet.add(String(v.id));
-                        } else {
-                            const doc = v.doc as Record<string, unknown> | undefined;
-                            if (doc && (typeof doc.id === 'string' || typeof doc.id === 'number')) {
-                                idSet.add(String(doc.id));
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Index search format: flat ID array
-            for (const idValue of searchResult as unknown[]) {
-                idSet.add(String(idValue));
-            }
-        }
-
-        return Array.from(idSet);
-    } catch (error) {
-        console.error('[FlexSearch] search failed', error);
-        return [];
-    }
-}
 
 /**
  * Re-export runtime state utilities for testing and debugging.
