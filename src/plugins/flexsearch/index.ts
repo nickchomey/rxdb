@@ -191,18 +191,13 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
             const collectionProto = proto as FlexSearchCollectionPrototype;
             if (!collectionProto.fts) {
                 collectionProto.fts = function (searchTerm: string, selector?: Record<string, unknown>) {
-                    console.log('[FlexSearch] .fts() method called with searchTerm:', searchTerm);
-
-                    // Get the FlexSearch state using the global state manager
-                    // (can't use storageInstance because it gets wrapped multiple times)
+                    // Get the FlexSearch state
                     const database = (this as any).database;
                     const collectionName = (this as any).name;
                     const flexSearchState = getFlexSearchState(database.name, collectionName);
 
                     if (!flexSearchState) {
-                        console.log('[FlexSearch] No FlexSearch state, falling back to find()');
-                        // Fallback: no FTS available, use normal find with $fts selector
-                        // The query hook will attempt to process it, or it will fail gracefully
+                        // Fallback: no FTS configured, use normal find with $fts selector
                         return this.find({
                             selector: {
                                 ...(selector || {}),
@@ -212,7 +207,6 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
                     }
 
                     // Search FlexSearch index directly to get matching IDs
-                    const searchStart = performance.now();
                     const matchingIds = ((): string[] => {
                         try {
                             const searchResult = flexSearchState.index.search(searchTerm);
@@ -258,39 +252,17 @@ export const RxDBFlexSearchPlugin: RxPlugin = {
                             return [];
                         }
                     })();
-                    const searchDuration = performance.now() - searchStart;
 
-                    if (searchDuration > 5) {
-                        console.debug(`[FlexSearch] FTS search: ${matchingIds.length} IDs in ${searchDuration.toFixed(2)}ms`);
-                    }
-
-                    // Check if there are other selectors besides the FTS query
-                    const hasOtherSelectors = selector && Object.keys(selector).length > 0;
-
-                    if (!hasOtherSelectors && matchingIds.length > 0) {
-                        // OPTIMIZATION: Pure FTS query with no other filters - use findByIds() for fastest lookup
-                        // This bypasses the normal query path and does direct primary key lookup
-                        // which is much faster than table scan + filtering
-                        console.log('[FlexSearch] Using findByIds optimization for pure FTS query');
-                        return this.findByIds(matchingIds);
-                    } else if (!hasOtherSelectors) {
-                        // No matching FTS results - return empty query using findByIds([])
-                        console.log('[FlexSearch] Using findByIds with empty results');
-                        return this.findByIds([]);
-                    } else {
-                        // Query has OTHER selectors besides FTS - need to combine them
-                        // Use find() with the full selector, letting the query hook handle rewriting
-                        console.log('[FlexSearch] Combining FTS with other selectors, using find()');
-                        const primaryPath = this.schema.primaryPath as string;
-                        return this.find({
-                            selector: {
-                                ...selector,
-                                [primaryPath]: {
-                                    $in: matchingIds
-                                }
+                    // RxDB now automatically optimizes $in on primaryPath to use findByIds-like mechanism, before using QueryMatcher on the remainder of the query
+                    const primaryPath = this.schema.primaryPath as string;
+                    return this.find({
+                        selector: {
+                            ...(selector || {}),
+                            [primaryPath]: {
+                                $in: matchingIds
                             }
-                        });
-                    }
+                        }
+                    });
                 };
             }
         }
