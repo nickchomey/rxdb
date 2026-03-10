@@ -17,7 +17,8 @@ import {
     getFlexSearchState,
     RxDBFlexSearchPlugin,
     wrappedFlexSearchStorage,
-    type FlexSearchMetaDocumentData
+    type FlexSearchMetaDocumentData,
+    type FlexSearchSearchOptions
 } from '../../plugins/flexsearch/index.mjs';
 import {
     schemaObjects,
@@ -33,7 +34,12 @@ type Collections = {
 };
 
 type FlexSearchCollection = RxCollection<HumanDocumentType> & {
-    fts(searchTerm: string, selector?: Record<string, unknown>): {
+    fts(
+        query?: string | FlexSearchSearchOptions,
+        limitOrOptions?: number | FlexSearchSearchOptions,
+        options?: FlexSearchSearchOptions,
+        selector?: Record<string, unknown>
+    ): {
         exec(): Promise<HumanDocumentType[]>;
     };
 };
@@ -50,7 +56,8 @@ function getMetaStorage(db: Awaited<ReturnType<typeof createDatabase>>['db']) {
 
 function getSchemaWithFts(
     fields: Array<'firstName' | 'lastName'>,
-    withAttachments = false
+    withAttachments = false,
+    fieldOverrides: Partial<Record<'firstName' | 'lastName', Record<string, unknown>>> = {}
 ): RxJsonSchema<HumanDocumentType> {
     const schema = clone(schemas.human) as RxJsonSchema<HumanDocumentType>;
     if (withAttachments) {
@@ -60,7 +67,8 @@ function getSchemaWithFts(
         const fieldSchema = clone((schema.properties as Record<string, unknown>)[fieldName]) as Record<string, unknown>;
         fieldSchema.fts = {
             tokenize: 'forward',
-            resolution: 9
+            resolution: 9,
+            ...(fieldOverrides[fieldName] ?? {})
         };
         (schema.properties as Record<string, unknown>)[fieldName] = fieldSchema;
     });
@@ -593,6 +601,138 @@ describeParallel('flexsearch.test.ts', () => {
         assert.ok(Array.isArray(meta.serialized));
         assert.ok((meta.serialized?.length ?? 0) > 0);
         assert.strictEqual(getFlexSearchState(db.name, 'humans')?.changesSinceLastPersist, 0);
+
+        await db.remove();
+    });
+
+    it('fts() accepts a limit option to cap results', async () => {
+        const { db, collection } = await createDatabase();
+
+        await collection.bulkInsert([
+            { passportId: 'lim-1', firstName: 'Alice', lastName: 'One', age: 21 },
+            { passportId: 'lim-2', firstName: 'Alice', lastName: 'Two', age: 22 },
+            { passportId: 'lim-3', firstName: 'Alice', lastName: 'Three', age: 23 }
+        ]);
+
+        await AsyncTestUtil.waitUntil(async () => {
+            const docs = await (collection as FlexSearchCollection).fts('Alice').exec();
+            return docs.length === 3;
+        });
+
+        const limitedResults = await (collection as FlexSearchCollection).fts('Alice', { limit: 1 }).exec();
+        assert.strictEqual(limitedResults.length, 1);
+
+        await db.remove();
+    });
+
+    it('fts() accepts a field option to restrict search to one field', async () => {
+        const { db, collection } = await createDatabase({
+            schema: getSchemaWithFts(['firstName', 'lastName'])
+        });
+
+        await collection.bulkInsert([
+            { passportId: 'fld-1', firstName: 'Carol', lastName: 'Alpha', age: 30 },
+            { passportId: 'fld-2', firstName: 'Alpha', lastName: 'Bravo', age: 31 }
+        ]);
+
+        await AsyncTestUtil.waitUntil(async () => {
+            const docs = await (collection as FlexSearchCollection).fts('Alpha').exec();
+            return docs.length === 2;
+        });
+
+        // Restrict to firstName only - only fld-2 has "Alpha" as firstName
+        const firstNameOnly = await (collection as FlexSearchCollection)
+            .fts('Alpha', { field: 'firstName' }).exec();
+        assert.strictEqual(firstNameOnly.length, 1);
+        assert.strictEqual(firstNameOnly[0].passportId, 'fld-2');
+
+        await db.remove();
+    });
+
+    it('fts() with suggest:true returns results for partial/fuzzy terms', async () => {
+        const { db, collection } = await createDatabase({
+            schema: getSchemaWithFts(['firstName'], false, {
+                firstName: { tokenize: 'forward', resolution: 9 }
+            })
+        });
+
+        await collection.insert({
+            passportId: 'fuz-1',
+            firstName: 'Alexandra',
+            lastName: 'Smith',
+            age: 25
+        });
+
+        await AsyncTestUtil.waitUntil(async () => {
+            const docs = await (collection as FlexSearchCollection).fts('Alexan').exec();
+            return docs.length === 1;
+        });
+
+        // With suggest:true, a short prefix or partial term should still match
+        const suggestResults = await (collection as FlexSearchCollection)
+            .fts('Alex', { suggest: true }).exec();
+        assert.ok(suggestResults.length >= 1);
+        assert.strictEqual(suggestResults[0].passportId, 'fuz-1');
+
+        await db.remove();
+    });
+
+    it('$fts selector accepts full search options object with query, limit, suggest', async () => {
+        const { db, collection } = await createDatabase();
+
+        await collection.bulkInsert([
+            { passportId: 'opt-1', firstName: 'Benjamin', lastName: 'Carter', age: 28 },
+            { passportId: 'opt-2', firstName: 'Benito', lastName: 'Cruz', age: 29 },
+            { passportId: 'opt-3', firstName: 'Ben', lastName: 'Davis', age: 30 }
+        ]);
+
+        await AsyncTestUtil.waitUntil(async () => {
+            const docs = await collection.find({
+                selector: { $fts: 'Ben' as never }
+            }).exec();
+            return docs.length === 3;
+        });
+
+        // Pass options object: limit to 1 result
+        const limitedResults = await collection.find({
+            selector: { $fts: { query: 'Ben', limit: 1 } as never }
+        }).exec();
+        assert.strictEqual(limitedResults.length, 1);
+
+        await db.remove();
+    });
+
+    it('field priority config is accepted and both fields are searchable', async () => {
+        // Verify that the priority option in fts config is accepted without error,
+        // and that both fields (with different priorities) are indexed and searchable.
+        const { db, collection } = await createDatabase({
+            schema: getSchemaWithFts(['firstName', 'lastName'], false, {
+                firstName: { tokenize: 'forward', resolution: 9, priority: 9 },
+                lastName: { tokenize: 'forward', resolution: 9, priority: 1 }
+            })
+        });
+
+        await collection.bulkInsert([
+            { passportId: 'pri-1', firstName: 'Target', lastName: 'Other', age: 20 },
+            { passportId: 'pri-2', firstName: 'Other', lastName: 'Target', age: 21 }
+        ]);
+
+        await AsyncTestUtil.waitUntil(async () => {
+            const docs = await (collection as FlexSearchCollection).fts('Target').exec();
+            return docs.length === 2;
+        });
+
+        const results = await (collection as FlexSearchCollection).fts('Target').exec();
+        assert.strictEqual(results.length, 2);
+        // Both documents match; verify they are returned (order depends on FlexSearch internals)
+        const ids = results.map(d => d.passportId).sort();
+        assert.deepStrictEqual(ids, ['pri-1', 'pri-2']);
+
+        // Searching by a term that only exists in lastName finds the correct document
+        const lastNameOnlyResults = await (collection as FlexSearchCollection)
+            .fts('Other', { field: 'lastName' }).exec();
+        assert.strictEqual(lastNameOnlyResults.length, 1);
+        assert.strictEqual(lastNameOnlyResults[0].passportId, 'pri-1');
 
         await db.remove();
     });

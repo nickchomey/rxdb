@@ -14,8 +14,6 @@ type WikiDoc = {
     id: string;
     title: string;
     content: string;
-    // Synthesized field for faster single-field FTS
-    fulltext?: string;
     titleLength?: number;
 };
 
@@ -25,7 +23,7 @@ type WikiCollection = {
         count(): { exec(): Promise<number> };
         find(query: { selector: Record<string, unknown>; limit?: number }): { exec(): Promise<WikiDoc[]> };
         findByIds(ids: string[]): { exec(): Promise<Map<string, any>> };
-        fts(searchTerm: string, selector?: Record<string, unknown>): { exec(): Promise<Map<string, any>> };
+        fts(query?: string | Record<string, unknown>, limitOrOptions?: number | Record<string, unknown>, options?: Record<string, unknown>, selector?: Record<string, unknown>): { exec(): Promise<WikiDoc[]> };
     };
 };
 
@@ -78,18 +76,20 @@ async function getDatabase(): Promise<WikiDatabase> {
                                 maxLength: 120
                             },
                             title: {
-                                type: 'string'
-                            },
-                            content: {
-                                type: 'string'
-                            },
-                            fulltext: {
                                 type: 'string',
                                 fts: {
-                                    // Single composite field with strict tokenization
-                                    // This uses FlexSearch Index type (faster than Document)
-                                    tokenize: 'strict',
-                                    resolution: 9
+                                    // Title is boosted 9x over content - exact/forward prefix matching
+                                    tokenize: 'forward',
+                                    resolution: 9,
+                                    priority: 9
+                                }
+                            },
+                            content: {
+                                type: 'string',
+                                fts: {
+                                    tokenize: 'forward',
+                                    resolution: 9,
+                                    priority: 1
                                 }
                             },
                             titleLength: {
@@ -195,11 +195,9 @@ async function loadData() {
 
         if (existing === 0) {
             let docs = await loadDatasetFile();
-            // Populate the fulltext field for single-field FTS (faster than multi-field)
-            // Also add titleLength for testing where clauses with $in optimization
+            // Add titleLength for testing where clauses with $in optimization
             docs = docs.map(doc => ({
                 ...doc,
-                fulltext: `${doc.title.toLowerCase()} ${doc.content.toLowerCase()}`,
                 titleLength: doc.title.length
             }));
             await db.items.bulkInsert(docs);
@@ -241,17 +239,13 @@ async function runSearch() {
     // Measure search time with detailed breakdown
     const searchStart = performance.now();
     console.time('[FlexSearch App] fts() total');
-    // Add a where clause to filter results by titleLength > 5
-    // This tests that the $in optimization works correctly with additional selectors
-    const docsMap = await db.items.fts(query, { titleLength: { $gt: 5 } }).exec();
+    // Search with suggest:true for fuzzy/tolerant matching, and filter by titleLength > 5
+    const docs = await db.items.fts(query, { suggest: true }, undefined, { titleLength: { $gt: 5 } }).exec();
     console.timeEnd('[FlexSearch App] fts() total');
     const searchTime = Math.round(performance.now() - searchStart);
 
-    // Convert Map to array
-    const docs = Array.from(docsMap.values()) as WikiDoc[];
     console.log(`[FlexSearch App] Search completed in ${searchTime}ms: ${docs.length} results from query "${query}"`);
 
-    // renderResults(query, docs.slice(0, 12), searchTime);
     renderResults(query, docs, searchTime);
     await updateStatus();
 }
