@@ -53,6 +53,9 @@ type WrappedStorageInstance<RxDocType, Internals, InstanceCreationOptions> = Awa
 type FlexSearchCollectionPrototype = {
     fts?: (searchTerm: string, selector?: Record<string, unknown>) => unknown;
     find: (query: { selector: Record<string, unknown> }) => unknown;
+    schema: {
+        primaryPath: string;
+    };
 };
 
 /**
@@ -151,9 +154,9 @@ export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
             };
 
             // Wrap storage instance to hook close/remove
-            const wrappedInstance = wrapRxStorageInstance(
-                params.schema,
-                instance,
+            const wrappedInstance = wrapRxStorageInstance<RxDocType>(
+                params.schema as any,
+                instance as any,
                 doc => doc as any,
                 doc => doc as any
             );
