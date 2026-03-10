@@ -16,6 +16,7 @@ type WikiDoc = {
     content: string;
     // Synthesized field for faster single-field FTS
     fulltext?: string;
+    titleLength?: number;
 };
 
 type WikiCollection = {
@@ -26,6 +27,13 @@ type WikiCollection = {
         findByIds(ids: string[]): { exec(): Promise<Map<string, any>> };
         fts(searchTerm: string, selector?: Record<string, unknown>): { exec(): Promise<Map<string, any>> };
     };
+};
+
+type WikiDatabase = {
+    name: string;
+    items: WikiCollection['items'];
+    addCollections(collections: Record<string, unknown>): Promise<unknown>;
+    remove(): Promise<void>;
 };
 
 addRxPlugin(RxDBFlexSearchPlugin);
@@ -40,9 +48,9 @@ const resultsTitle = document.getElementById('results-title') as HTMLElement;
 const resultCount = document.getElementById('result-count') as HTMLElement;
 const results = document.getElementById('results') as HTMLElement;
 
-let dbPromise: Promise<any> | undefined;
+let dbPromise: Promise<WikiDatabase> | undefined;
 
-async function getDatabase() {
+async function getDatabase(): Promise<WikiDatabase> {
     if (!dbPromise) {
         dbPromise = createRxDatabase<WikiCollection>({
             name: 'rxdb-flexsearch-example-web',
@@ -57,7 +65,7 @@ async function getDatabase() {
             multiInstance: false,
             eventReduce: true,
             ignoreDuplicate: false
-        }).then(async db => {
+        }).then(async (db: WikiDatabase) => {
             await db.addCollections({
                 items: {
                     schema: {
@@ -83,6 +91,9 @@ async function getDatabase() {
                                     tokenize: 'strict',
                                     resolution: 9
                                 }
+                            },
+                            titleLength: {
+                                type: 'number'
                             }
                         },
                         required: ['id', 'title', 'content']
@@ -100,7 +111,7 @@ async function getDatabase() {
             return db;
         });
     }
-    return dbPromise;
+    return dbPromise as Promise<WikiDatabase>;
 }
 
 async function loadDatasetFile(): Promise<WikiDoc[]> {
@@ -108,7 +119,7 @@ async function loadDatasetFile(): Promise<WikiDoc[]> {
     if (!response.ok) {
         throw new Error('Dataset file missing. Run `deno task prepare-data` in examples/flexsearch first.');
     }
-    return await response.json();
+    return await response.json() as WikiDoc[];
 }
 
 async function updateStatus() {
@@ -185,9 +196,11 @@ async function loadData() {
         if (existing === 0) {
             let docs = await loadDatasetFile();
             // Populate the fulltext field for single-field FTS (faster than multi-field)
+            // Also add titleLength for testing where clauses with $in optimization
             docs = docs.map(doc => ({
                 ...doc,
-                fulltext: `${doc.title.toLowerCase()} ${doc.content.toLowerCase()}`
+                fulltext: `${doc.title.toLowerCase()} ${doc.content.toLowerCase()}`,
+                titleLength: doc.title.length
             }));
             await db.items.bulkInsert(docs);
 
@@ -228,12 +241,14 @@ async function runSearch() {
     // Measure search time with detailed breakdown
     const searchStart = performance.now();
     console.time('[FlexSearch App] fts() total');
-    const docsMap = await db.items.fts(query).exec();
+    // Add a where clause to filter results by titleLength > 5
+    // This tests that the $in optimization works correctly with additional selectors
+    const docsMap = await db.items.fts(query, { titleLength: { $gt: 5 } }).exec();
     console.timeEnd('[FlexSearch App] fts() total');
     const searchTime = Math.round(performance.now() - searchStart);
 
     // Convert Map to array
-    const docs = Array.from(docsMap.values());
+    const docs = Array.from(docsMap.values()) as WikiDoc[];
     console.log(`[FlexSearch App] Search completed in ${searchTime}ms: ${docs.length} results from query "${query}"`);
 
     // renderResults(query, docs.slice(0, 12), searchTime);

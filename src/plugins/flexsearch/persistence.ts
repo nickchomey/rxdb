@@ -48,96 +48,17 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
     let startCheckpoint: RxStorageDefaultCheckpoint | undefined;
     let restoredFromSnapshot = false;
     if (hasCompatibleSnapshot && metaDocument?.serialized) {
-        console.log('[FlexSearch] Attempting snapshot restore, serialized length:', metaDocument.serialized.length);
         try {
-            try {
-                console.log('[FlexSearch] Converting serialized to Uint8Array...');
-                const compressedBytes = new Uint8Array(metaDocument.serialized);
-                console.log('[FlexSearch] Converted, array length:', compressedBytes.length);
-            } catch (beforeDecompressError) {
-                console.error('[FlexSearch] Error before decompression:', beforeDecompressError);
-                throw new Error('Uint8Array conversion failed');
-            }
-            
-            let serializedBody: string;
-            try {
-                // Backward compatible path for previously compressed snapshots.
-                console.log('[FlexSearch] Decoding UTF-8 snapshot...');
-                const decoded = new TextDecoder().decode(new Uint8Array(metaDocument.serialized));
-                console.log('[FlexSearch] Decoded UTF-8, length:', decoded.length, 'first char:', decoded.charAt(0));
-                serializedBody = decoded;
-            } catch (decodeError) {
-                console.error('[FlexSearch] UTF-8 decode failed:', decodeError instanceof Error ? decodeError.message : String(decodeError));
-                throw new Error('Could not decode snapshot data');
-            }
-            
-            console.log('[FlexSearch] Restoring index snapshot...');
-            // FlexSearch serialize(false) returns raw JavaScript code like "doc.reg=..." that modifies the Document
-            // instance. The code expects `doc` to be bound to the Document object.
-            
-            // Try multiple approaches to execute the restoration code
-            let restoreFailed = true;
-            
-            // Approach 1: Direct eval with doc as local variable
-            try {
-                console.log('[FlexSearch] Attempting restoration with direct eval...');
-                const doc = state.index;  // Provide 'doc' variable for the serialized code
-                eval(serializedBody);
-                console.log('[FlexSearch] Direct eval completed, index keys:', Object.keys(doc || {}).slice(0, 5));
-                restoreFailed = false;
-            } catch (e) {
-                console.warn('[FlexSearch] Direct eval failed:', e instanceof Error ? e.message : String(e));
-            }
-            
-            // Approach 2: Wrap in function with doc parameter  
-            if (restoreFailed) {
-                try {
-                    console.log('[FlexSearch] Attempting restoration with wrapped function...');
-                    const wrapper = new Function('doc', serializedBody);
-                    wrapper.call(state.index, state.index);
-                    console.log('[FlexSearch] Wrapped function execution completed');
-                    restoreFailed = false;
-                } catch (e) {
-                    console.warn('[FlexSearch] Wrapped function failed:', e instanceof Error ? e.message : String(e));
-                }
-            }
-            
-            // Approach 3: Execute via function that receives doc as 'this'
-            if (restoreFailed) {
-                try {
-                    console.log('[FlexSearch] Attempting restoration with this binding...');
-                    (function (this: any) {
-                        const doc = this;
-                        eval(serializedBody);
-                    }).call(state.index);
-                    console.log('[FlexSearch] This binding approach completed');
-                    restoreFailed = false;
-                } catch (e) {
-                    console.warn('[FlexSearch] This binding approach failed:', e instanceof Error ? e.message : String(e));
-                }
-            }
-            
-            if (restoreFailed) {
-                throw new Error('All snapshot restoration approaches failed');
-            }
-            
-            restoredFromSnapshot = true;
-            console.log('[FlexSearch] Snapshot restored successfully');
+            // Decode persisted snapshot
+            const serializedBody = new TextDecoder().decode(new Uint8Array(metaDocument.serialized));
 
-            // Verify restoration worked
-            try {
-                const testResult = state.index.search('test');
-                console.log('[FlexSearch] Post-restore verification: test search returned', 
-                    Array.isArray(testResult) ? testResult.length + ' results' :
-                    typeof testResult);
-            } catch (e) {
-                console.error('[FlexSearch] Error testing restored index:', e instanceof Error ? e.message : String(e));
-                // Don't throw - if index doesn't have data, that's okay for "test" search
-                // The real test will be when we do the incremental catch-up
-            }
+            // Restore index by executing serialized code with doc parameter
+            // serialize(false) returns JavaScript code like "doc.reg=new Set(...)"
+            const wrapper = new Function('doc', serializedBody);
+            wrapper.call(state.index, state.index);
+            restoredFromSnapshot = true;
         } catch (error) {
             // Snapshot is optional; if restore fails we rebuild by catch-up/indexing path below.
-            console.error('[FlexSearch] Outer catch - snapshot restore failed:', error instanceof Error ? error.message : String(error));
             restoredFromSnapshot = false;
         }
 
@@ -147,20 +68,16 @@ export async function initializeIndexState<RxDocType, Internals, InstanceCreatio
                 lwt: metaDocument.checkpointLwt
             };
             state.checkpoint = startCheckpoint;
-            console.log('[FlexSearch] Restored checkpoint:', startCheckpoint);
         }
     }
 
-    // CRITICAL FIX: Only do full catchup if snapshot restore failed or didn't exist.
     // If we restored from snapshot, only catch up changes AFTER the snapshot checkpoint.
     // This prevents rebuilding the entire index and interfering with the restored state.
-    console.log('[FlexSearch] Starting catchup, restoredFromSnapshot:', restoredFromSnapshot, 'startCheckpoint:', startCheckpoint);
     const caughtUpChanges = await catchUpFromCheckpoint(
         state,
         instance,
         restoredFromSnapshot ? startCheckpoint : undefined
     );
-    console.log('[FlexSearch] Catchup complete, had changes:', caughtUpChanges);
 
     if (!restoredFromSnapshot || caughtUpChanges) {
         await persistIndexSnapshot(state, databaseInstanceToken);
@@ -301,7 +218,19 @@ export async function persistIndexSnapshot(
     state: FlexSearchRuntimeState,
     databaseInstanceToken: string
 ): Promise<void> {
-    const serializedBody = state.index.serialize(false);
+    const serializedResult = state.index.serialize(false);
+
+    // Handle union return type: string | Promise<Uint8Array> | Uint8Array
+    let serializedBody: string;
+    if (typeof serializedResult === 'string') {
+        serializedBody = serializedResult;
+    } else if (serializedResult instanceof Promise) {
+        const resolved = await serializedResult;
+        serializedBody = new TextDecoder().decode(resolved);
+    } else {
+        serializedBody = new TextDecoder().decode(serializedResult);
+    }
+
     const persistedBytes = new TextEncoder().encode(serializedBody);
 
     await writeMetaDocument(state, databaseInstanceToken, {
