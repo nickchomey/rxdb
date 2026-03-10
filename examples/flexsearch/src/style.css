@@ -177,6 +177,137 @@ input {
   line-height: 1.55;
 }
 
+/* ---- Add Document form ---- */
+.add-doc {
+  padding: 28px;
+  margin-bottom: 20px;
+}
+
+.add-doc-heading {
+  margin: 0 0 8px;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.add-doc-hint {
+  margin: 0 0 24px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.add-doc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.add-doc-fields {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: 24px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-group label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.field-group input {
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.field-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: white;
+}
+
+.field-group textarea {
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 1rem;
+  resize: vertical;
+  min-height: 120px;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.field-group textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: white;
+}
+
+.add-doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+#add-doc-button {
+  flex-shrink: 0;
+  padding: 14px 24px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+}
+
+#add-doc-button:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+#add-doc-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+#add-doc-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.add-doc-status {
+  font-size: 0.9rem;
+  color: var(--muted);
+  transition: color 0.3s;
+}
+
+.add-doc-status.success {
+  color: #2e7d5e;
+  font-weight: 500;
+}
+
+.add-doc-status.error {
+  color: var(--accent);
+  font-weight: 500;
+}
+
 @media (max-width: 700px) {
   .page {
     width: min(100% - 20px, 1120px);
@@ -184,11 +315,16 @@ input {
   }
 
   .controls,
-  .results {
+  .results,
+  .add-doc {
     padding: 18px;
   }
 
   .result-card {
     grid-template-columns: 1fr;
+
+    .add-doc-fields {
+      grid-template-columns: 1fr;
+    }
   }
 }
