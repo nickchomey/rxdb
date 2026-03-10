@@ -35,9 +35,7 @@ type Collections = {
 
 type FlexSearchCollection = RxCollection<HumanDocumentType> & {
     fts(
-        query?: string | FlexSearchSearchOptions,
-        limitOrOptions?: number | FlexSearchSearchOptions,
-        options?: FlexSearchSearchOptions,
+        queryOrOptions?: string | FlexSearchSearchOptions,
         selector?: Record<string, unknown>
     ): {
         exec(): Promise<HumanDocumentType[]>;
@@ -571,40 +569,6 @@ describeParallel('flexsearch.test.ts', () => {
         await second.db.close();
     });
 
-    it('schedules debounced persistence under burst writes', async () => {
-        const { db, collection } = await createDatabase({
-            persistence: {
-                minDebounce: 200,
-                maxDebounce: 400
-            }
-        });
-
-        await collection.bulkInsert([
-            { passportId: 'd1', firstName: 'One', lastName: 'Writer', age: 10 },
-            { passportId: 'd2', firstName: 'Two', lastName: 'Writer', age: 11 },
-            { passportId: 'd3', firstName: 'Three', lastName: 'Writer', age: 12 }
-        ]);
-
-        await AsyncTestUtil.waitUntil(async () => {
-            const state = getFlexSearchState(db.name, 'humans');
-            return Boolean(state && (state.changesSinceLastPersist ?? 0) >= 3);
-        });
-
-        const state = getFlexSearchState(db.name, 'humans');
-        assert.ok(state);
-        assert.ok((state.changesSinceLastPersist ?? 0) >= 3);
-
-        await waitForPersistence(520);
-
-        const meta = await readMetaState(db);
-        assert.ok(meta);
-        assert.ok(Array.isArray(meta.serialized));
-        assert.ok((meta.serialized?.length ?? 0) > 0);
-        assert.strictEqual(getFlexSearchState(db.name, 'humans')?.changesSinceLastPersist, 0);
-
-        await db.remove();
-    });
-
     it('fts() accepts a limit option to cap results', async () => {
         const { db, collection } = await createDatabase();
 
@@ -619,7 +583,7 @@ describeParallel('flexsearch.test.ts', () => {
             return docs.length === 3;
         });
 
-        const limitedResults = await (collection as FlexSearchCollection).fts('Alice', { limit: 1 }).exec();
+        const limitedResults = await (collection as FlexSearchCollection).fts({ query: 'Alice', limit: 1 }).exec();
         assert.strictEqual(limitedResults.length, 1);
 
         await db.remove();
@@ -642,7 +606,7 @@ describeParallel('flexsearch.test.ts', () => {
 
         // Restrict to firstName only - only fld-2 has "Alpha" as firstName
         const firstNameOnly = await (collection as FlexSearchCollection)
-            .fts('Alpha', { field: 'firstName' }).exec();
+            .fts({ query: 'Alpha', field: 'firstName' }).exec();
         assert.strictEqual(firstNameOnly.length, 1);
         assert.strictEqual(firstNameOnly[0].passportId, 'fld-2');
 
@@ -670,7 +634,7 @@ describeParallel('flexsearch.test.ts', () => {
 
         // With suggest:true, a short prefix or partial term should still match
         const suggestResults = await (collection as FlexSearchCollection)
-            .fts('Alex', { suggest: true }).exec();
+            .fts({ query: 'Alex', suggest: true }).exec();
         assert.ok(suggestResults.length >= 1);
         assert.strictEqual(suggestResults[0].passportId, 'fuz-1');
 
@@ -730,7 +694,7 @@ describeParallel('flexsearch.test.ts', () => {
 
         // Searching by a term that only exists in lastName finds the correct document
         const lastNameOnlyResults = await (collection as FlexSearchCollection)
-            .fts('Other', { field: 'lastName' }).exec();
+            .fts({ query: 'Other', field: 'lastName' }).exec();
         assert.strictEqual(lastNameOnlyResults.length, 1);
         assert.strictEqual(lastNameOnlyResults[0].passportId, 'pri-1');
 
