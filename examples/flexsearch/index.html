@@ -46,6 +46,27 @@
             </div>
         </section>
 
+        <section class="add-doc card">
+            <h2 class="add-doc-heading">Add Document</h2>
+            <p class="add-doc-hint">Insert a custom document into RxDB — the FlexSearch index updates automatically via the change-stream.</p>
+            <div class="add-doc-form">
+                <div class="add-doc-fields">
+                    <div class="field-group">
+                        <label class="status-label" for="doc-title">Title</label>
+                        <input id="doc-title" type="text" placeholder="Document title" />
+                    </div>
+                    <div class="field-group">
+                        <label class="status-label" for="doc-content">Content</label>
+                        <textarea id="doc-content" rows="4" placeholder="Document content…"></textarea>
+                    </div>
+                </div>
+                <div class="add-doc-actions">
+                    <button id="add-doc-button">Add Document</button>
+                    <span id="add-doc-status" class="add-doc-status"></span>
+                </div>
+            </div>
+        </section>
+
         <section class="results card">
             <div class="results-head">
                 <h2 id="results-title">Results</h2>

@@ -45,6 +45,10 @@ const snapshotStatus = document.getElementById('snapshot-status') as HTMLElement
 const resultsTitle = document.getElementById('results-title') as HTMLElement;
 const resultCount = document.getElementById('result-count') as HTMLElement;
 const results = document.getElementById('results') as HTMLElement;
+const addDocButton = document.getElementById('add-doc-button') as HTMLButtonElement;
+const docTitleInput = document.getElementById('doc-title') as HTMLInputElement;
+const docContentInput = document.getElementById('doc-content') as HTMLTextAreaElement;
+const addDocStatus = document.getElementById('add-doc-status') as HTMLElement;
 
 let dbPromise: Promise<WikiDatabase> | undefined;
 
@@ -69,8 +73,15 @@ async function getDatabase(): Promise<WikiDatabase> {
                 items: {
                     schema: {
                         version: 0,
+                                                version: 1,
                         primaryKey: 'id',
+                                                version: 1,
+                                                primaryKey: 'id',
                         type: 'object',
+                                            schema: {
+                                                version: 1,
+                                                primaryKey: 'id',
+                                                type: 'object',
                         properties: {
                             id: {
                                 type: 'string',
@@ -83,8 +94,7 @@ async function getDatabase(): Promise<WikiDatabase> {
                                     tokenize: 'forward',
                                     resolution: 9
                                 }
-                            },
-                            content: {
+                                                        version: 1,
                                 type: 'string',
                                 fts: {
                                     tokenize: 'forward',
@@ -268,6 +278,41 @@ async function clearDatabase() {
     snapshotStatus.textContent = 'Cleared';
 }
 
+async function addDocument() {
+    const title = docTitleInput.value.trim();
+    const content = docContentInput.value.trim();
+
+    if (!title || !content) {
+        addDocStatus.textContent = 'Both title and content are required.';
+        addDocStatus.className = 'add-doc-status error';
+        return;
+    }
+
+    addDocButton.disabled = true;
+    addDocStatus.textContent = 'Adding…';
+    addDocStatus.className = 'add-doc-status';
+
+    try {
+        const db = await getDatabase();
+        const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await db.items.bulkInsert([{ id, title, content, titleLength: title.length }]);
+    await db.items.bulkInsert([{ id, title, content }]);
+
+        docTitleInput.value = '';
+        docContentInput.value = '';
+        addDocStatus.textContent = `Added "${title}" — FlexSearch will index it via the change-stream.`;
+        addDocStatus.className = 'add-doc-status success';
+
+        await updateStatus();
+    } catch (error) {
+        console.error('[addDocument] Error:', error);
+        addDocStatus.textContent = String(error);
+        addDocStatus.className = 'add-doc-status error';
+    } finally {
+        addDocButton.disabled = false;
+    }
+}
+
 loadButton.addEventListener('click', () => {
     void loadData();
 });
@@ -284,6 +329,16 @@ queryInput.addEventListener('keydown', event => {
 
 clearButton.addEventListener('click', () => {
     void clearDatabase();
+});
+
+addDocButton.addEventListener('click', () => {
+    void addDocument();
+});
+
+docTitleInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+        void addDocument();
+    }
 });
 
 await updateStatus();
