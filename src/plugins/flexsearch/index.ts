@@ -66,7 +66,7 @@ type FlexSearchCollectionPrototype = {
 export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
     config: FlexSearchWrapperConfig
 ): RxStorage<Internals, InstanceCreationOptions> {
-    const { storage, persistence, defaultIndexOptions } = config;
+    const { storage, persistence, defaultIndexOptions, debug } = config;
     const wrappedStorageName = storage.name.startsWith('validate-')
         ? storage.name.replace('validate-', 'validate-flexsearch-')
         : `flexsearch-${storage.name}`;
@@ -124,6 +124,9 @@ export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
                 index: flexIndex,
                 primaryPath: ftsConfig.primaryPath,
                 indexedFields: ftsConfig.fields.map(f => f.field),
+                databaseName: params.databaseName,
+                collectionName: params.collectionName,
+                debug,
                 metaStorage,
                 schemaHash: computeSchemaHash(params.schema),
                 metaDocumentId: FLEXSEARCH_META_DOC_ID

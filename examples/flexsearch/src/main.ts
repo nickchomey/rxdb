@@ -54,6 +54,7 @@ async function getDatabase(): Promise<WikiDatabase> {
             name: 'rxdb-flexsearch-example-web',
             storage: wrappedFlexSearchStorage({
                 storage: getRxStorageDexie(),
+                debug: true,
                 persistence: {
                     minDebounce: 150,
                     maxDebounce: 1200,
@@ -237,8 +238,16 @@ async function runSearch() {
     // Measure search time with detailed breakdown
     const searchStart = performance.now();
     console.time('[FlexSearch App] fts() total');
-    // Search with suggest:true for fuzzy/tolerant matching, and filter by titleLength > 5
-    const docs = await db.items.fts({ query, suggest: true }, { titleLength: { $gt: 5 } }).exec();
+    // Search with suggest:true for fuzzy/tolerant matching, and filter by titleLength > 5.
+    // A per-field descriptor array applies a 5× boost to the title field so that
+    // articles whose title matches the query rank above those matching only in content.
+    const docs = await db.items.fts({
+        suggest: true,
+        field: [
+            { field: 'title', query, boost: 5 },
+            { field: 'content', query }
+        ]
+    }, { titleLength: { $gt: 5 } }).exec();
     console.timeEnd('[FlexSearch App] fts() total');
     const searchTime = Math.round(performance.now() - searchStart);
 

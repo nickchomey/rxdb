@@ -151,8 +151,10 @@ export function searchFlexIds(
 
         if (typeof firstRow === 'string' || typeof firstRow === 'number') {
             // Flat format: plain ID array (Index search or pluck)
-            for (const id of searchResult as Array<string | number>) {
-                idSet.add(String(id));
+            for (const id of searchResult as unknown[]) {
+                if (typeof id === 'string' || typeof id === 'number') {
+                    idSet.add(String(id));
+                }
             }
         } else if (firstRow && typeof firstRow === 'object') {
             const first = firstRow as Record<string, unknown>;
