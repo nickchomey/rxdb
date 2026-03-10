@@ -35,6 +35,16 @@ export type FlexSearchFieldConfig = {
     minlength?: number;
     cache?: boolean | number;
     async?: boolean;
+    /**
+     * Custom scoring function applied at **index time** when a document is added.
+     * Called per term per document. Return a value from `0` (highest priority) up to
+     * `resolution` (lowest priority). FlexSearch stores the term in the corresponding
+     * score bucket, controlling how early in the result array the document appears.
+     *
+     * Signature mirrors FlexSearch's `IndexOptions.score`:
+     *   `(content, term, termIndex, partial, partialIndex) => number`
+     */
+    score?: (content: string[], term: string, termIndex: number, partial: string, partialIndex: number) => number;
 };
 
 /**
@@ -60,11 +70,6 @@ export type FlexSearchSearchOptions = {
     /** Use the search result cache. */
     cache?: boolean;
     /**
-     * Restrict search to one or more indexed fields.
-     * Field names must match those defined in the schema `fts` config.
-     */
-    field?: string | string[];
-    /**
      * Tag filter: `{ fieldName: tagValue }`.
      * Only returns documents matching the given tag.
      */
@@ -84,6 +89,20 @@ export type FlexSearchSearchOptions = {
      * Each result item has `{ id, field[] }`. Our extraction reads `id` directly.
      */
     merge?: boolean;
+    /**
+     * Scoring multiplier applied at **search time** by the FlexSearch Resolver during
+     * multi-field result intersect/union. Higher values shift matching documents into
+     * higher-priority score buckets, making them appear earlier in the merged result.
+     *
+     * Maps to `ResolverOptions.boost` in FlexSearch's internal resolver chain.
+     */
+    boost?: number;
+    /**
+     * Per-field search descriptors, each with their own `query`, `boost`, `limit`, etc.
+     * Allows different boost weights per field in a single Document.search() call.
+     * E.g. `[{ field: 'title', query: 'term', boost: 5 }, { field: 'content', query: 'term' }]`
+     */
+    field?: string | string[] | Array<{ field: string; query?: string; boost?: number; limit?: number; suggest?: boolean }>;
 };
 
 export type FlexSearchPersistenceConfig = {
@@ -96,6 +115,7 @@ export type FlexSearchWrapperConfig = {
     storage: RxStorage<unknown, unknown>;
     persistence?: FlexSearchPersistenceConfig;
     defaultIndexOptions?: Partial<FlexSearchFieldConfig>;
+    debug?: boolean;
 };
 
 export type FlexSearchMetaDocument = {
@@ -128,6 +148,9 @@ export type FlexSearchRuntimeState = {
     index: FlexSearchDocument<FlexSearchIndexedDocument, false, false>;
     primaryPath: string;
     indexedFields: string[];
+    databaseName: string;
+    collectionName: string;
+    debug?: boolean;
     changeStreamSubscription?: Subscription;
     initPromise?: Promise<void>;
     checkpoint?: RxStorageDefaultCheckpoint;
