@@ -94,7 +94,8 @@ async function getDatabase(): Promise<WikiDatabase> {
                                     tokenize: 'forward',
                                     resolution: 9
                                 }
-                                                        version: 1,
+                            },
+                            content: {
                                 type: 'string',
                                 fts: {
                                     tokenize: 'forward',

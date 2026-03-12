@@ -157,8 +157,10 @@ export function wrappedFlexSearchStorage<Internals, InstanceCreationOptions>(
             };
 
             // Wrap storage instance to hook close/remove
+            // Use childSchema (fts keywords stripped) not params.schema, so AJV
+            // strict mode never sees the custom `fts` keyword on bulkWrite.
             const wrappedInstance = wrapRxStorageInstance<RxDocType>(
-                params.schema as any,
+                childSchema as any,
                 instance as any,
                 doc => doc as any,
                 doc => doc as any

@@ -32,6 +32,7 @@ export function getAjv() {
         ajv.addKeyword('attachments');
         ajv.addKeyword('ref');
         ajv.addKeyword('crdt');
+        ajv.addKeyword('fts');
         addFormats(ajv);
     }
     return ajv;
